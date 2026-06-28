@@ -38,7 +38,7 @@ class JoystickNode(Node):
         # ROS parameters
         self.declare_parameter('publish_topic', 'joystick')
         self.declare_parameter('publish_hz', 50.0)
-        self.declare_parameter('throttle_scale', 0.12)
+        self.declare_parameter('throttle_scale', 0.22)
         self.declare_parameter('throttle_deadzone', 0.05)
         self.declare_parameter('steering_deadzone', 0.05)
         self.declare_parameter('steering_axis', 'auto')
