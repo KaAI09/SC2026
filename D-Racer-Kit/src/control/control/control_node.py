@@ -32,6 +32,9 @@ class ControlNode(Node):
         self.declare_parameter('joystick_topic', 'joystick')
         self.declare_parameter('control_topic', '/control')
         self.declare_parameter('command_hz', 10.0)
+        # Dead-man watchdog: in direct (/control) mode, auto-stop when the
+        # command stream stalls. <= 0 disables it. Ignored in joystick mode.
+        self.declare_parameter('control_timeout', 0.5)
 
         i2c_bus = int(self.get_parameter('i2c_bus').value)
         pca9685_addr = int(self.get_parameter('pca9685_addr').value)
@@ -46,9 +49,12 @@ class ControlNode(Node):
         command_hz = float(self.get_parameter('command_hz').value)
         if command_hz <= 0.0:
             raise ValueError('command_hz must be greater than 0')
+        self.control_timeout = float(self.get_parameter('control_timeout').value)
 
         self.command_hz = command_hz
         self.steer_trim = self.load_steer_trim()
+        # Timestamp of the most recent /control message (direct mode watchdog).
+        self.last_control_time = None
 
         self.d3_racer = D3Racer(
             i2c_bus=i2c_bus,
@@ -68,6 +74,7 @@ class ControlNode(Node):
             f'  joystick_topic={joystick_topic}\n'
             f'  control_topic={control_topic}\n'
             f'  command_hz={self.command_hz}\n'
+            f'  control_timeout={self.control_timeout}\n'
             f'  vehicle_config_file={self.vehicle_config_file}'
         )
 
@@ -97,7 +104,24 @@ class ControlNode(Node):
             self.apply_actuation(self.steering, 0.0)
             return
 
+        if self.is_control_stale():
+            # Command stream stalled in direct mode: hold steering neutral and
+            # cut throttle until fresh /control messages resume.
+            self.apply_actuation(self.steer_trim, 0.0)
+            return
+
         self.apply_actuation(self.steering, self.throttle)
+
+    def is_control_stale(self):
+        # Watchdog only applies to direct (/control) mode. Joystick mode
+        # refreshes self.throttle continuously, so it never goes stale.
+        if self.use_joystick_control or self.control_timeout <= 0.0:
+            return False
+        if self.last_control_time is None:
+            # No /control command received yet: stay in the safe neutral state.
+            return True
+        elapsed = (self.get_clock().now() - self.last_control_time).nanoseconds / 1e9
+        return elapsed > self.control_timeout
 
     def apply_actuation(self, steering, throttle):
         self.d3_racer.set_steering_percent(float(steering))
@@ -120,6 +144,7 @@ class ControlNode(Node):
 
         self.steering = float(msg.steering)
         self.throttle = float(msg.throttle)
+        self.last_control_time = self.get_clock().now()
 
     def engage_e_stop(self):
         if self.e_stop_active:
