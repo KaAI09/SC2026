@@ -1,0 +1,26 @@
+{
+    "disableBypassPermissionsMode": "disable",
+    "permissions": {
+      "deny": [
+        "Read(./.env)",
+        "Read(./.env.*)",
+        "Read(./secrets/**)",
+        "Read(./**/*.pem)",
+        "Bash(git push --force*)",
+        "Bash(git reset --hard*)",
+        "Bash(git clean -fd*)"
+      ],
+      "ask": [
+        "Bash(git push *)",
+        "Bash(git merge *)",
+        "Bash(git rebase *)",
+        "Bash(sudo *)",
+        "Bash(colcon build *)",
+        "Bash(ros2 run *)",
+        "Bash(ros2 launch *)",
+        "Bash(ros2 topic pub *)",
+        "Bash(nmcli *)",
+        "Bash(netplan *)"
+      ]
+    }
+  }
