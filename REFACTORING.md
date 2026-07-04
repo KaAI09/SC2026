@@ -1,0 +1,115 @@
+# SC2026 리팩토링 로그 — `kos/track-test`
+
+> 이 문서는 `kos/track-test` 브랜치 **전용** 진행 기록이다. `main`에 병합하지 않는다.
+> 워크트리: `SC2026(refactoring)/` (베이스: `main` @ e964069).
+
+## 0. 목적 / 원칙
+
+기존 테스트 코드(현재 `kos/hw-cam-track-test`에 산재)를 **온라인(실차)** 과 **오프라인(영상 평가)** 두 환경으로 명확히 분리하고, 모놀리식 노드를 **인지 / 제어 / 액추에이터 / 기록** 노드로 쪼개 경량화한다.
+
+- **오프라인**: 주행 영상으로 모든 주행 로직·알고리즘·파라미터 조합을 평가 → 트랙 특화 **최적 프로파일** 도출.
+- **온라인**: 오프라인이 고른 **단일 최적 프로파일**로만 D3-G 실차 주행 + 로그/영상 저장.
+- **단일 진실원(single source of truth)**: 인지/제어 코어 로직은 한 곳에만 두고 온·오프라인이 공유(현재 `src/opencv/`와 `local_scripts/`에 중복 복사되어 있어 드리프트 위험 → 제거 대상).
+
+## 1. 현재 상태 스냅샷 (리팩토링 시작 시점)
+
+`main` 베이스 + `kos/hw-cam-track-test`에 구현된 기능들을 이 브랜치로 삽입 예정.
+
+| 구분 | 위치 | 성격 |
+|---|---|---|
+| 인지 코어 | `src/opencv/opencv/lane_core.py` **및** `local_scripts/lane_preview.py`(복붙) | 순수 파이썬 파이프라인(A~F 축, 프리셋 M/O) |
+| 제어 코어 | `src/opencv/opencv/control_core.py` **및** `local_scripts/control_core.py`(복붙) | 순수 파이썬 컨트롤러(C1~C5) |
+| 인지 노드 | `src/opencv/opencv/lane_detect_node.py` | 인지 전용 + 오버레이 mp4/CSV 녹화(액추에이션 없음) |
+| 폐루프 노드 | `src/opencv/opencv/lane_follow_node.py` | **인지+제어+액추에이션+녹화 모놀리식** ← 분리 대상 |
+| 액추에이터 | `src/control/` (`control_node`) | PCA9685/D3Racer PWM 드라이버 + 데드맨 워치독 (베이스, 유지) |
+| 오프라인 도구 | `local_scripts/` (`lane_preview.py`, `lane_compare.py`, `control_eval.py`) | 조합 비교/평가 |
+| 메시지 | `control_msgs/Control`, `joystick_msgs/Joystick` | LaneState 메시지는 **없음**(신규 필요) |
+| 베이스 노드 | `camera`, `joystick`, `monitor`, `battery`, `topst_utils` | 유지/검토 |
+
+## 2. 목표 아키텍처
+
+```
+[오프라인 환경]  로컬 PC, venv, ROS 불필요
+  주행영상(mp4/bag) ─▶ 인지코어 + 제어코어 조합 평가 ─▶ 최적 프로파일 YAML
+                       (lane_preview / lane_compare / control_eval)          │
+                                                                             ▼
+[온라인 환경]  D3-G, ROS2 Humble                                    profiles/<track>.yaml
+  camera ─▶ [인지 노드] ─(LaneState)─▶ [제어 노드] ─(/control)─▶ [액추에이터 노드] ─▶ 차량
+                  │                         ▲                          (control, 베이스)
+                  │                    joystick(engage/E-stop)
+                  └───────────▶ [기록 노드] ◀── camera/LaneState/control
+                               (mp4 + CSV + rosbag)
+```
+
+- **인지 노드**(신규 `perception` pkg, `perception_node`): camera → `driving_core` 인지 → `LaneState` 발행.
+- **제어 노드**(신규 `driving` pkg, `driving_node`): `LaneState` → `driving_core` 제어 → `/control` 발행. 안전 게이트(engage/E-stop/conf) 포함.
+- **액추에이터 노드**(기존 `control` pkg 유지): `/control` → PWM. 워치독 유지.
+- **기록 노드**(신규 `recorder` pkg): 주행 로그 CSV + 영상 mp4 + rosbag 저장. joystick START/STOP 트리거.
+- **오프라인**: `LaneState`/`Control` 코어를 ROS 없이 import해 영상에 대해 조합 평가.
+
+### LaneState 메시지 (인지↔제어 계약, 신규 `lane_msgs`)
+```
+std_msgs/Header header
+float32 center_error
+float32 ema
+float32 heading
+string  heading_label
+float32 confidence
+float32 left_conf
+float32 right_conf
+float32 curvature
+string  state          # OK / LOW_CONF / OUTLIER / HOLD / LOST
+bool    used_fallback
+bool    valid          # center_error 존재 여부
+```
+
+### 최적 프로파일 YAML (오프라인→온라인 유일 계약)
+```yaml
+# profiles/2025track.yaml  (오프라인 평가 산출물)
+perception: {mode: O1, roi_top_frac: 0.45, orange_h_lo: 15, orange_h_hi: 38, ...}
+control:    {controller: C2, kp: 0.5, kd: 0.1, steer_max: 0.8, throttle_base: 0.13, ...}
+```
+인지/제어 노드는 수십 개 ROS 파라미터 대신 이 프로파일 하나를 로드(점 3·4·11 구현).
+
+## 3. 패키지 재편 계획
+
+| 패키지 | 처리 | 비고 |
+|---|---|---|
+| `camera`, `joystick`, `topst_utils`, `config`, `control_msgs`, `joystick_msgs` | **유지** | 베이스, 사용 중 |
+| `control` (액추에이터) | **유지** | PWM 드라이버·워치독. 개념상 "actuator" |
+| `driving_core` | **신규** | 인지/제어 **공유 코어**(순수 파이썬, 단일 진실원). 온·오프라인 공용 |
+| `perception` | **신규** | 인지 노드(`perception_node`), `driving_core` 인지 import |
+| `driving` | **신규** | 제어 노드(`driving_node`), `driving_core` 제어 import → `/control` |
+| `lane_msgs` | **신규** | LaneState 메시지 |
+| `recorder` | **신규** | 통합 기록 노드(mp4+CSV+bag) |
+| `opencv`(`opencv_node`) | **제거** | 단순 재발행 노드, `perception`이 대체 |
+| `monitor` | **유지** | 초반 카메라 각도 세팅·모니터링용 |
+| `battery` | **유지** | `auto_driving.launch`에서 사용 |
+| `data_acquisition.sh` | **유지 or 흡수** | START 버튼 bag 녹화용. 기록 노드로 흡수 가능 |
+| `image_raw.jpg` | **제거 후보** | 샘플 이미지 |
+
+## 4. 단계별 마이그레이션 계획
+
+- [x] **P0** 워크트리·브랜치·본 문서 생성
+- [x] **P1** `main` 위에 기존 구현 기능 삽입(베이스라인 확보)
+- [ ] **P2** 인지/제어 코어 **중복 제거** → 단일 공유 모듈(온·오프라인 공용)
+- [ ] **P3** `LaneState` 메시지 정의 + 인지/제어 노드 **분리**
+- [ ] **P4** 기록 노드 추출(mp4 + CSV + rosbag 동기화)
+- [ ] **P5** 프로파일 YAML 배선(오프라인 산출 → 온라인 로드)
+- [ ] **P6** 미사용 패키지/노드 정리·경량화
+- [ ] **P7** launch 계층화(offline / online-manual / online-auto) + 문서화
+- 각 단계: macOS 정적검사(py_compile/flake8/코어 유닛테스트) → D3-G 빌드·실차검증 → 본 문서 로그 기록.
+
+## 5. 결정 사항 (LOCKED, 2026-07-05)
+
+1. **제어 로직 패키지 = `driving`**, 노드 = **`driving_node`** (`control`=액추에이터와 구분).
+2. **공유 코어 = 단일 모듈** — `src/driving_core/`(ament_python 순수 파이썬 패키지)에 인지/제어 코어를 한 벌만 두고, 온라인 노드는 ROS import, 오프라인은 venv에 `pip install -e`(또는 PYTHONPATH)로 동일 코어 import. 복붙 2벌 제거.
+3. **제거 = `opencv_node`만.** `monitor`는 초반 카메라 각도 세팅·모니터링용으로 **유지**. `data_acquisition.sh`는 주행 테스트 중 START 버튼 bag 녹화에 필요하면 **유지 또는 기록 노드로 흡수**.
+4. **오프라인 도구 = 신규 최상위 `offline/`** 로 이동(온라인 `src/`와 물리 분리).
+
+## 6. 진행 로그
+
+| 날짜 | 단계 | 내용 |
+|---|---|---|
+| 2026-07-05 | P0 | 워크트리 `SC2026(refactoring)` + 브랜치 `kos/track-test`(main 기준) 생성. 현재 구조 분석·목표 아키텍처·단계 계획 수립. 결정 4건 확정(§5). |
+| 2026-07-05 | P1 | `kos/hw-cam-track-test`의 구현 기능 전체를 main 위에 삽입(베이스라인). 노랑 밴드 튜닝(15/38/70/90)·`lane_compare.py` 보존. 전체 py_compile 통과. 미커밋 상태. |
