@@ -1,0 +1,30 @@
+# Driving profile — 2025 test track (yellow-tape shortcut + roundabout).
+#
+# Single offline -> online contract: the perception mode/params and controller/
+# gains the offline evaluation (offline/lane_compare.py, offline/control_eval.py)
+# selected for this track. perception_node and driving_node load this one file
+# via the `profile` parameter instead of many separate ROS params.
+#
+# Keys map 1:1 to driving_core.lane_core.Cfg (perception) and
+# driving_core.control_core.CtrlCfg (control). Unspecified keys use presets.
+name: track2025
+
+perception:
+  mode: O1                 # yellow/orange-tape preset
+  roi_top_frac: 0.45
+  orange_h_lo: 15          # measured tape hue band on this track (H ~22-32)
+  orange_h_hi: 38
+  orange_s_min: 70
+  orange_v_min: 90
+
+control:
+  controller: C2           # PD baseline
+  kp: 0.5
+  kd: 0.1
+  center_target: 0.0
+  steer_max: 0.8
+  steer_sign: 1.0
+  slew_rate: 0.15
+  throttle_base: 0.13
+  throttle_min: 0.0
+  conf_gate: 0.4

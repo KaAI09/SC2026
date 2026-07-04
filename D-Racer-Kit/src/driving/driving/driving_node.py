@@ -22,6 +22,7 @@ Topics:
   pub : /control    (control_msgs/Control)
 """
 import math
+import os
 
 import rclpy
 from rclpy.node import Node
@@ -30,6 +31,7 @@ from joystick_msgs.msg import Joystick
 from lane_msgs.msg import LaneState
 
 from driving_core.control_core import Controller, make_ctrl
+from driving_core.profile import load_profile, section
 
 
 def _num(v, valid):
@@ -49,6 +51,8 @@ class DrivingNode(Node):
         p('control_topic', '/control')
         p('publish_rate', 20.0)
         p('engage', False)
+        # offline-selected profile (authoritative for the fields it specifies)
+        p('profile', '')
         # control (C2 PD defaults, conservative)
         p('controller', 'C2')
         p('kp', 0.5)
@@ -70,8 +74,8 @@ class DrivingNode(Node):
         control_topic = str(gp('control_topic').value)
         self.publish_rate = float(gp('publish_rate').value)
 
-        self.controller = Controller(make_ctrl(
-            str(gp('controller').value),
+        ctrl_name = str(gp('controller').value)
+        ctrl_kw = dict(
             kp=float(gp('kp').value), kd=float(gp('kd').value), ki=float(gp('ki').value),
             center_target=float(gp('center_target').value),
             steer_max=float(gp('steer_max').value), steer_sign=float(gp('steer_sign').value),
@@ -79,8 +83,16 @@ class DrivingNode(Node):
             throttle_base=float(gp('throttle_base').value),
             throttle_min=float(gp('throttle_min').value),
             curv_slow=float(gp('curv_slow').value), conf_gate=float(gp('conf_gate').value),
-        ))
-        self.conf_gate = float(gp('conf_gate').value)
+        )
+        # profile (offline-selected) overrides the fields it specifies
+        profile_path = os.path.expanduser(str(gp('profile').value))
+        if profile_path:
+            csec = section(load_profile(profile_path), 'control')
+            ctrl_name = str(csec.pop('controller', ctrl_name))
+            ctrl_kw.update(csec)
+            self.get_logger().info(f'driving: loaded profile {profile_path}')
+        self.controller = Controller(make_ctrl(ctrl_name, **ctrl_kw))
+        self.conf_gate = float(ctrl_kw['conf_gate'])
 
         # state
         self.e_stop = False

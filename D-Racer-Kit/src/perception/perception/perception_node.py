@@ -14,6 +14,7 @@ Params:
   log_hz, publish_debug.
 """
 import math
+import os
 
 import cv2
 import numpy as np
@@ -24,6 +25,7 @@ from sensor_msgs.msg import CompressedImage
 from lane_msgs.msg import LaneState
 
 from driving_core.lane_core import LanePipeline, make_cfg
+from driving_core.profile import load_profile, section
 
 
 def _nan(v):
@@ -37,6 +39,8 @@ class PerceptionNode(Node):
         self.declare_parameter('subscribe_topic', '/camera/image/compressed')
         self.declare_parameter('state_topic', '/lane/state')
         self.declare_parameter('debug_topic', '/lane/debug/compressed')
+        # offline-selected profile (authoritative when set); else use mode+overrides
+        self.declare_parameter('profile', '')
         self.declare_parameter('mode', 'M2')
         self.declare_parameter('jpeg_quality', 80)
         self.declare_parameter('debug_scale', 2.0)
@@ -112,6 +116,15 @@ class PerceptionNode(Node):
             overrides['orange_s_min'] = int(gp('orange_s_min').value)
         if int(gp('orange_v_min').value) >= 0:
             overrides['orange_v_min'] = int(gp('orange_v_min').value)
+
+        # A profile (offline-selected) is authoritative: it replaces mode +
+        # per-axis overrides so the car runs exactly what offline picked.
+        profile_path = os.path.expanduser(str(gp('profile').value))
+        if profile_path:
+            psec = section(load_profile(profile_path), 'perception')
+            mode = str(psec.pop('mode', mode))
+            overrides = psec
+            self.get_logger().info(f'perception: loaded profile {profile_path}')
 
         self.cfg = make_cfg(mode, **overrides)
         self.pipeline = LanePipeline(self.cfg)

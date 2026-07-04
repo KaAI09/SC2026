@@ -95,7 +95,7 @@ control:    {controller: C2, kp: 0.5, kd: 0.1, steer_max: 0.8, throttle_base: 0.
 - [x] **P2** 인지/제어 코어 **중복 제거** → 단일 공유 모듈(온·오프라인 공용)
 - [x] **P3** `LaneState` 메시지 정의 + 인지/제어 노드 **분리**
 - [x] **P4** 기록 노드 추출(mp4 + CSV; rosbag은 joystick_node 소유 유지)
-- [ ] **P5** 프로파일 YAML 배선(오프라인 산출 → 온라인 로드)
+- [x] **P5** 프로파일 YAML 배선(오프라인 산출 → 온라인 로드)
 - [ ] **P6** 미사용 패키지/노드 정리·경량화
 - [ ] **P7** launch 계층화(offline / online-manual / online-auto) + 문서화
 - 각 단계: macOS 정적검사(py_compile/flake8/코어 유닛테스트) → D3-G 빌드·실차검증 → 본 문서 로그 기록.
@@ -113,6 +113,7 @@ control:    {controller: C2, kp: 0.5, kd: 0.1, steer_max: 0.8, throttle_base: 0.
 |---|---|---|
 | 2026-07-05 | P0 | 워크트리 `SC2026(refactoring)` + 브랜치 `kos/track-test`(main 기준) 생성. 현재 구조 분석·목표 아키텍처·단계 계획 수립. 결정 4건 확정(§5). |
 | 2026-07-05 | P1 | `kos/hw-cam-track-test`의 구현 기능 전체를 main 위에 삽입(베이스라인). 노랑 밴드 튜닝(15/38/70/90)·`lane_compare.py` 보존. 전체 py_compile 통과. (커밋 e409b51) |
+| 2026-07-05 | P5 | 프로파일 계약 배선: `driving_core/profile.py`(YAML 로더), 샘플 `config/profiles/track2025.yaml`(오프라인 선정 O1 튜닝밴드 + C2). `perception_node`/`driving_node`에 `profile` 파라미터 추가 — 설정 시 mode/params·controller/gains를 프로파일이 authoritative로 대체(점 4·11). end-to-end 검증: 프로파일→`make_cfg`/`make_ctrl` 정상 매핑(스키마 키 유효성 포함). |
 | 2026-07-05 | P4 | 기록 노드 `recorder`(`recorder_node`) 신설: joystick START(`is_recording`) 미러링으로 START→STOP마다 `drive_<ts>.mp4` + `.csv`(LaneState + 자율 `/control` + 수동 joystick 명령 동기 기록). rosbag은 joystick_node가 `data_acquisition.sh`로 이미 소유 → 중복 방지 위해 recorder는 mp4+csv만 담당(그래서 `data_acquisition.sh` 유지 필요 확인). py_compile 통과. |
 | 2026-07-05 | P3 | `lane_msgs/LaneState.msg`(인지↔제어 계약) 신설. 인지 노드 `perception`(`perception_node`: camera→`driving_core`→`/lane/state`+debug, 녹화 없음)과 제어 노드 `driving`(`driving_node`: `/lane/state`→컨트롤러→`/control`, engage/E-stop/conf 게이트·워치독 친화 발행)로 분리. 기존 `lane_detect_node`/`lane_follow_node`는 P6까지 병존. 두 노드 py_compile 통과(ROS 빌드는 D3-G). |
 | 2026-07-05 | P2 | 공유 코어 패키지 `driving_core` 신설(`lane_core`+`control_core` git mv). `LanePipeline.process(debug=True)` 추가로 오프라인 패널을 단일 코어에서 렌더. `opencv` 노드 import→`driving_core`, package.xml 의존성 추가. 오프라인 도구를 최상위 `offline/`로 이동하며 인라인 중복 파이프라인 제거(`lane_preview`/`lane_compare` 재작성, 중복 `control_core` 삭제). `local_scripts/` 제거. 루트 `.gitignore`에 누락됐던 아티팩트 무시 규칙(`*.mp4`/`.venv`/`bagfile`/`offline/rslt`) 보강. venv에 `pip install -e driving_core` 후 오프라인 lane_compare end-to-end 검증(검출·렌더 정상). |
