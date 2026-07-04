@@ -1,11 +1,11 @@
-"""Pure (ROS-independent) lane-detection pipeline shared by the onboard node.
+"""Pure (ROS-independent) lane-detection pipeline. Single source of truth.
 
-Mirrors the offline experimentation tool (local_scripts/lane_preview.py):
-composable axes A..F with mode presets M1..M6. Depends only on cv2 + numpy so
-it can run inside the ROS2 node and be unit-tested off-board.
+Composable axes A..F with mode presets M1..M6 (white) / O1..O3 (yellow tape),
+imported by BOTH the online perception node and the offline tools (offline/).
+Depends only on cv2 + numpy so it runs inside the ROS2 node and off-board.
 
 Usage:
-    from opencv.lane_core import LanePipeline, PRESETS, make_cfg
+    from driving_core.lane_core import LanePipeline, PRESETS, make_cfg
     pipe = LanePipeline(make_cfg('M2', roi_top_frac=0.6))
     overlay_bgr, state = pipe.process(frame_bgr)   # state: dict (center_error, ...)
 
@@ -20,7 +20,7 @@ import numpy as np
 
 
 # ==========================================================================
-# Config + presets (kept in sync with local_scripts/lane_preview.py)
+# Config + presets (single source; imported by online node + offline tools)
 # ==========================================================================
 @dataclass
 class Cfg:

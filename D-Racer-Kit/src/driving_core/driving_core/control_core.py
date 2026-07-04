@@ -7,7 +7,7 @@ state to a (steering, throttle) command. The PRINCIPLE of each controller is
 fixed; everything that depends on the vehicle, track, or camera/resolution is a
 parameter so the same code retunes to any track.
 
-    from control_core import Controller, make_ctrl
+    from driving_core.control_core import Controller, make_ctrl
     ctrl = Controller(make_ctrl('C2', kp=0.7, center_target=-0.15))
     steer, thr, info = ctrl.step({'center_error': ce, 'ema': ema,
                                   'heading': hd_deg, 'confidence': conf,
