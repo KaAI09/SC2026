@@ -8,11 +8,26 @@ CLAUDE.local.md
 # Python
 **/__pycache__/
 *.py[cod]
+*.egg-info/
+*.egg
+
+# Python virtual environments
+.venv/
+venv/
+env/
 
 # ROS2 build outputs
 D-Racer-Kit/build/
 D-Racer-Kit/install/
 D-Racer-Kit/log/
+
+# Execution results & recordings (never upload, any directory)
+*.mp4
+*.db3
+*.db3-wal
+*.db3-shm
+D-Racer-Kit/bagfile/
+offline/rslt/
 
 # Local training outputs
 runs/

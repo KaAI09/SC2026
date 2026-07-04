@@ -352,7 +352,11 @@ class LanePipeline:
         self._static_roi = None
         self._size = None
 
-    def process(self, bgr):
+    def process(self, bgr, debug=False):
+        """Run one frame. Returns (overlay, state); with debug=True also returns
+        a third dict of intermediates (mask, det, st, y0, trap, ema, fstate,
+        used_fb) so offline tools can render their own panels from this single
+        source instead of re-implementing the pipeline."""
         c = self.cfg
         h, w = bgr.shape[:2]
         if self._size != (h, w):
@@ -381,6 +385,10 @@ class LanePipeline:
             'right_conf': det['right_conf'], 'curvature': st['curvature'],
             'state': fstate, 'used_fallback': used_fb,
         }
+        if debug:
+            dbg = {'mask': mask, 'det': det, 'st': st, 'y0': y0, 'trap': trap,
+                   'ema': ema, 'fstate': fstate, 'used_fb': used_fb}
+            return overlay, state, dbg
         return overlay, state
 
     def _draw(self, bgr, mask, det, st, y0, trap, ema, fstate, used_fb):

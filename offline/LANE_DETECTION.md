@@ -1,6 +1,6 @@
 # 차선검출 오프라인 실험 설계 문서 (lane_preview.py)
 
-> **위치/성격**: `D-Racer-Kit/local_scripts/`. 로컬 실험 도구이며 차량/배포 코드가 아님. 코드·문서는 저장소에 공유(추적)하되, 실행 결과물(`*.mp4`/`*.db3`)은 git-ignore.
+> **위치/성격**: `offline/`. 로컬 실험 도구이며 차량/배포 코드가 아님. 코드·문서는 저장소에 공유(추적)하되, 실행 결과물(`*.mp4`/`*.db3`)은 git-ignore.
 > **목적**: 녹화 클립으로 여러 검출 로직을 **모드 선택 + 파라미터 튜닝**만으로 비교하고, 대회 당일 실제 트랙에서 최적 조합을 고른다.
 > **비목표**: 이 문서/코드는 조향·throttle 등 차량 제어를 직접 수행하지 않는다(검출·상태추정까지만, 제어는 분리).
 
@@ -150,18 +150,20 @@ Step 6  이미지 공간이 한계일 때만 M7(BEV) 실험
 ## 6. 사용법
 
 ```bash
-# 로컬 venv 사용 (레포 루트의 .venv)
-cd D-Racer-Kit/local_scripts
-CLIP="../bagfile/test track 주행예시 클립(1).mp4"
+# 로컬 venv 사용 (레포 루트의 .venv). 최초 1회 공유 코어 설치:
+#   ../.venv/bin/pip install -e ../D-Racer-Kit/src/driving_core
+# (lane_preview/lane_compare 는 온라인 노드와 동일한 driving_core 를 import 한다)
+cd offline
+CLIP="../D-Racer-Kit/bagfile/test track 주행예시 클립(1).mp4"
 
 # 단일 모드
-../../.venv/bin/python lane_preview.py "$CLIP" --mode M2
+../.venv/bin/python lane_preview.py "$CLIP" --mode M2
 
 # 모드 비교 일괄
-for m in M1 M2 M3; do ../../.venv/bin/python lane_preview.py "$CLIP" --mode $m; done
+for m in M1 M2 M3; do ../.venv/bin/python lane_preview.py "$CLIP" --mode $m; done
 
 # ROI 스윕 + 곡선 피팅 오버레이
-../../.venv/bin/python lane_preview.py "$CLIP" --mode M2 --roi-top 0.65 --polyfit
+../.venv/bin/python lane_preview.py "$CLIP" --mode M2 --roi-top 0.65 --polyfit
 ```
 
 **CLI 인자**: `input`, `--mode {M1..M6}`, `--roi-top`, `--split {center,prev_frame,prev_row}`, `--heading {slope,two_point,norm_slope,hough}`, `--aspect`, `--length`, `--lane-width-tol`, `--dynamic-roi`, `--per-lane-conf`, `--median`, `--polyfit`, `--output`. (프리셋을 CLI로 덮어써 조합 실험)

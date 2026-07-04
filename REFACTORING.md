@@ -92,7 +92,7 @@ control:    {controller: C2, kp: 0.5, kd: 0.1, steer_max: 0.8, throttle_base: 0.
 
 - [x] **P0** 워크트리·브랜치·본 문서 생성
 - [x] **P1** `main` 위에 기존 구현 기능 삽입(베이스라인 확보)
-- [ ] **P2** 인지/제어 코어 **중복 제거** → 단일 공유 모듈(온·오프라인 공용)
+- [x] **P2** 인지/제어 코어 **중복 제거** → 단일 공유 모듈(온·오프라인 공용)
 - [ ] **P3** `LaneState` 메시지 정의 + 인지/제어 노드 **분리**
 - [ ] **P4** 기록 노드 추출(mp4 + CSV + rosbag 동기화)
 - [ ] **P5** 프로파일 YAML 배선(오프라인 산출 → 온라인 로드)
@@ -112,4 +112,5 @@ control:    {controller: C2, kp: 0.5, kd: 0.1, steer_max: 0.8, throttle_base: 0.
 | 날짜 | 단계 | 내용 |
 |---|---|---|
 | 2026-07-05 | P0 | 워크트리 `SC2026(refactoring)` + 브랜치 `kos/track-test`(main 기준) 생성. 현재 구조 분석·목표 아키텍처·단계 계획 수립. 결정 4건 확정(§5). |
-| 2026-07-05 | P1 | `kos/hw-cam-track-test`의 구현 기능 전체를 main 위에 삽입(베이스라인). 노랑 밴드 튜닝(15/38/70/90)·`lane_compare.py` 보존. 전체 py_compile 통과. 미커밋 상태. |
+| 2026-07-05 | P1 | `kos/hw-cam-track-test`의 구현 기능 전체를 main 위에 삽입(베이스라인). 노랑 밴드 튜닝(15/38/70/90)·`lane_compare.py` 보존. 전체 py_compile 통과. (커밋 e409b51) |
+| 2026-07-05 | P2 | 공유 코어 패키지 `driving_core` 신설(`lane_core`+`control_core` git mv). `LanePipeline.process(debug=True)` 추가로 오프라인 패널을 단일 코어에서 렌더. `opencv` 노드 import→`driving_core`, package.xml 의존성 추가. 오프라인 도구를 최상위 `offline/`로 이동하며 인라인 중복 파이프라인 제거(`lane_preview`/`lane_compare` 재작성, 중복 `control_core` 삭제). `local_scripts/` 제거. 루트 `.gitignore`에 누락됐던 아티팩트 무시 규칙(`*.mp4`/`.venv`/`bagfile`/`offline/rslt`) 보강. venv에 `pip install -e driving_core` 후 오프라인 lane_compare end-to-end 검증(검출·렌더 정상). |

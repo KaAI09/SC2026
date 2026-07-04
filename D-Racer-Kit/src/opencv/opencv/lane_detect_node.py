@@ -30,7 +30,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from sensor_msgs.msg import CompressedImage
 from joystick_msgs.msg import Joystick
 
-from opencv.lane_core import LanePipeline, make_cfg
+from driving_core.lane_core import LanePipeline, make_cfg
 
 
 class LaneDetectNode(Node):

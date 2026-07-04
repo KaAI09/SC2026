@@ -35,8 +35,8 @@ from sensor_msgs.msg import CompressedImage
 from control_msgs.msg import Control
 from joystick_msgs.msg import Joystick
 
-from opencv.lane_core import LanePipeline, make_cfg
-from opencv.control_core import Controller, make_ctrl
+from driving_core.lane_core import LanePipeline, make_cfg
+from driving_core.control_core import Controller, make_ctrl
 
 
 class LaneFollowNode(Node):

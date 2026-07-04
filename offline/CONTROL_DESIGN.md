@@ -57,7 +57,7 @@
 ## 5. 오프라인 모방평가 (`control_eval.py`)
 차 없이 각 제어기를 **사람 조작과 비교**해 1차 랭킹. 각 제어기를 상태의 *특징변환*으로 보고 사람 steering에 **최적 스케일+bias**를 피팅 → `R²`, `MAE`, 추정게인 리포트. `bias`는 한방향 루프의 상수 feedforward를 흡수하므로 **`R²(no bias)`로 "상수오프셋 의존도"**를 함께 본다.
 ```
-../../.venv/bin/python control_eval.py ../rslt/lane_O2_20260703_160323.csv
+../.venv/bin/python control_eval.py ../rslt/lane_O2_20260703_160323.csv
 ```
 
 ### 첫 결과 (lane_O2_20260703_160323.csv, 757프레임/29.7s)

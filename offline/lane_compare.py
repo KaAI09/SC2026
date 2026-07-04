@@ -1,23 +1,20 @@
 #!/usr/bin/env python3
 """Side-by-side comparison of lane-detection presets on the SAME frames.
 
-LOCAL-ONLY tool built on top of lane_preview.py. Instead of one MP4 per mode,
-this samples a few frames from a clip, runs each preset's stateful pipeline
-(temporal state preserved by iterating every frame), and tiles the *detection*
-panels into a single PNG grid:
+Offline tool on top of the shared `driving_core.lane_core` pipeline. Samples a
+few frames from a clip, runs each preset's stateful pipeline (temporal state
+preserved by iterating every frame), and tiles the *detection* panels into one
+PNG grid:
 
         rows  = sampled frames (time)
         cols  = presets / parameter combinations
 
-so every combination is judged on identical frames. Purpose: pick the best
-mode + threshold combo for a given clip at a glance.
+so every combination is judged on identical frames.
 
-    ../../.venv/bin/python lane_compare.py CLIP.mp4 --modes M1,M2,M3,M4,M5,M6
-    ../../.venv/bin/python lane_compare.py CLIP.mp4 --modes O1,O2,O3,Y1 --frames 5
+    python lane_compare.py CLIP.mp4 --modes M1,M2,M3,M4,M5,M6
+    python lane_compare.py CLIP.mp4 --modes O1,O2,O3 --frames 5
 
-Extra candidate presets tuned for the 2025 test track (yellow tape, measured
-hue ~22-32) are registered below as Y1..Y3 without touching lane_preview's
-shipped PRESETS.
+Requires driving_core importable (e.g. `pip install -e D-Racer-Kit/src/driving_core`).
 """
 import argparse
 import os
@@ -26,31 +23,33 @@ from dataclasses import replace
 import cv2
 import numpy as np
 
-import lane_preview as lp
+from driving_core.lane_core import LanePipeline, PRESETS
 
 
 # Explicit-band reference presets. The shipped O1-O3 band defaults are now tuned
 # to the 2025 test track (H 15-38, S>=70, V>=90), so Y1-Y3 currently match O1-O3;
 # they stay as a fixed reference if the shipped defaults are later changed.
 EXTRA = {
-    'Y1': replace(lp.PRESETS['O1'], name='Y1 Yellow25',
+    'Y1': replace(PRESETS['O1'], name='Y1 Yellow25',
                   orange_h_lo=15, orange_h_hi=38, orange_s_min=70, orange_v_min=90),
-    'Y2': replace(lp.PRESETS['O2'], name='Y2 Yellow25Curve',
+    'Y2': replace(PRESETS['O2'], name='Y2 Yellow25Curve',
                   orange_h_lo=15, orange_h_hi=38, orange_s_min=70, orange_v_min=90),
-    'Y3': replace(lp.PRESETS['O3'], name='Y3 Yellow25Strict',
+    'Y3': replace(PRESETS['O3'], name='Y3 Yellow25Strict',
                   orange_h_lo=15, orange_h_hi=38, orange_s_min=70, orange_v_min=90),
 }
 
 
 def all_presets():
-    d = dict(lp.PRESETS)
+    d = dict(PRESETS)
     d.update(EXTRA)
     return d
 
 
-def detection_panel(frame, mask, det, st, cfg, y0, trap, ema, fstate, used_fb, scale):
-    """The 3rd (detection) panel only, with a compact stats overlay."""
+def detection_panel(frame, dbg, state, cfg, scale):
+    """Detection panel (green row centers, magenta polyfit, red EMA) + stats."""
     h, w = frame.shape[:2]
+    det, st = dbg['det'], dbg['st']
+    y0, trap, ema, fstate = dbg['y0'], dbg['trap'], dbg['ema'], dbg['fstate']
     p = frame.copy()
     cv2.polylines(p, [trap], True, (0, 200, 255), 1)
     for y, xc in zip(det['rows'], det['centers']):
@@ -83,14 +82,7 @@ def run_mode(path, cfg, sample_idx, scale):
     cap = cv2.VideoCapture(path)
     if not cap.isOpened():
         raise SystemExit(f'cannot open {path}')
-    ok, frame = cap.read()
-    if not ok:
-        raise SystemExit('empty video')
-    h, w = frame.shape[:2]
-    static_roi = lp.roi_mask(h, w, cfg)
-    stab = lp.Stabilizer(cfg)
-    prev_center_px = prev_width = None
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    pipe = LanePipeline(cfg)
     want = set(int(i) for i in sample_idx)
     out = {}
     i = 0
@@ -98,21 +90,9 @@ def run_mode(path, cfg, sample_idx, scale):
         ok, frame = cap.read()
         if not ok:
             break
-        if cfg.dynamic_roi and prev_center_px is not None:
-            cpx = w / 2 + (prev_center_px - w / 2) * cfg.dynamic_roi_gain
-            rmask, y0, trap = lp.roi_mask(h, w, cfg, center_px=cpx)
-        else:
-            rmask, y0, trap = static_roi
-        mask, used_fb = lp.compute_mask(frame, cfg, rmask)
-        det = lp.extract(mask, cfg, y0, prev_center_px, prev_width)
-        st = lp.compute_state(det, cfg, h, w, y0, mask)
-        ema, fstate = stab.update(st['center_error'], det['conf'])
-        prev_width = det['lane_width']
-        if ema is not None:
-            prev_center_px = w / 2 + ema * (w / 2)
+        _, state, dbg = pipe.process(frame, debug=True)
         if i in want:
-            out[i] = detection_panel(frame, mask, det, st, cfg, y0, trap,
-                                     ema, fstate, used_fb, scale)
+            out[i] = detection_panel(frame, dbg, state, cfg, scale)
         i += 1
     cap.release()
     return out, i
@@ -137,7 +117,6 @@ def main():
     cap = cv2.VideoCapture(args.input)
     n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     cap.release()
-    # skip head/tail, evenly sample
     sample_idx = np.linspace(n * 0.1, n * 0.9, args.frames).astype(int)
 
     cols = []
