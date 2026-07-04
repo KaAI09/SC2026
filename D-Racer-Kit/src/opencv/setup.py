@@ -22,6 +22,8 @@ setup(
     entry_points={
         'console_scripts': [
             'opencv_node = opencv.opencv_node:main',
+            'lane_detect_node = opencv.lane_detect_node:main',
+            'lane_follow_node = opencv.lane_follow_node:main',
         ],
     },
 )

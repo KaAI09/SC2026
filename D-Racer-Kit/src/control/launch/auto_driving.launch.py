@@ -11,7 +11,7 @@ def get_vehicle_config_path():
         candidate = base_path / 'src' / 'config' / 'vehicle_config.yaml'
         if candidate.exists():
             return str(candidate)
-    return '/home/topst/D-Racer/src/config/vehicle_config.yaml'
+    return '/home/topst/SC2026/D-Racer-Kit/src/config/vehicle_config.yaml'
 
 
 def get_default_model_path():
@@ -19,7 +19,7 @@ def get_default_model_path():
         candidate = base_path / 'src' / 'inference' / 'model' / 'test19.h5'
         if candidate.exists():
             return str(candidate)
-    return '/home/topst/D-Racer/src/inference/model/test19.h5'
+    return '/home/topst/SC2026/D-Racer-Kit/src/inference/model/test19.h5'
 
 
 def generate_launch_description():

@@ -37,7 +37,7 @@
 ### 3-1. 빌드
 
 ```bash
-cd /home/topst/D-Racer
+cd /home/topst/SC2026/D-Racer-Kit
 colcon build --packages-select battery
 source install/setup.bash
 ```

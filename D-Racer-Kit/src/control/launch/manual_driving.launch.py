@@ -9,7 +9,7 @@ def get_vehicle_config_path():
         candidate = base_path / 'src' / 'config' / 'vehicle_config.yaml'
         if candidate.exists():
             return str(candidate)
-    return str(Path('/home/topst/D-Racer/src/config/vehicle_config.yaml'))
+    return str(Path('/home/topst/SC2026/D-Racer-Kit/src/config/vehicle_config.yaml'))
 
 
 def generate_launch_description():

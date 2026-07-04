@@ -20,7 +20,7 @@ def get_default_vehicle_config_path():
         candidate = base_path / 'src' / 'config' / 'vehicle_config.yaml'
         if candidate.exists():
             return str(candidate)
-    return '/home/topst/D-Racer/src/config/vehicle_config.yaml'
+    return '/home/topst/SC2026/D-Racer-Kit/src/config/vehicle_config.yaml'
 
 
 def get_default_data_acquisition_script_path():
@@ -28,7 +28,7 @@ def get_default_data_acquisition_script_path():
         candidate = base_path / 'src' / 'data_acquisition.sh'
         if candidate.exists():
             return str(candidate)
-    return '/home/topst/D-Racer/src/data_acquisition.sh'
+    return '/home/topst/SC2026/D-Racer-Kit/src/data_acquisition.sh'
 
 
 class JoystickNode(Node):
