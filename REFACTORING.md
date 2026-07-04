@@ -97,7 +97,7 @@ control:    {controller: C2, kp: 0.5, kd: 0.1, steer_max: 0.8, throttle_base: 0.
 - [x] **P4** 기록 노드 추출(mp4 + CSV; rosbag은 joystick_node 소유 유지)
 - [x] **P5** 프로파일 YAML 배선(오프라인 산출 → 온라인 로드)
 - [x] **P6** 미사용 패키지/노드 정리·경량화
-- [ ] **P7** launch 계층화(offline / online-manual / online-auto) + 문서화
+- [x] **P7** launch 계층화(offline / online-manual / online-auto) + 문서화
 - 각 단계: macOS 정적검사(py_compile/flake8/코어 유닛테스트) → D3-G 빌드·실차검증 → 본 문서 로그 기록.
 
 ## 5. 결정 사항 (LOCKED, 2026-07-05)
@@ -107,12 +107,42 @@ control:    {controller: C2, kp: 0.5, kd: 0.1, steer_max: 0.8, throttle_base: 0.
 3. **제거 = `opencv_node`만.** `monitor`는 초반 카메라 각도 세팅·모니터링용으로 **유지**. `data_acquisition.sh`는 주행 테스트 중 START 버튼 bag 녹화에 필요하면 **유지 또는 기록 노드로 흡수**.
 4. **오프라인 도구 = 신규 최상위 `offline/`** 로 이동(온라인 `src/`와 물리 분리).
 
+## 7. 운용 가이드 (리팩토링 후)
+
+### 오프라인 (로컬 PC, ROS 불필요)
+```bash
+# 최초 1회: 공유 코어 설치
+.venv/bin/pip install -e D-Racer-Kit/src/driving_core
+# 주행 영상으로 조합 비교 → 최적 (mode+params, controller+gains) 선정
+cd offline
+../.venv/bin/python lane_compare.py CLIP.mp4 --modes M1,M2,O1,O2 --frames 4
+../.venv/bin/python lane_preview.py CLIP.mp4 --mode O1 --roi-top 0.45
+../.venv/bin/python control_eval.py rslt/drive_XXXX.csv
+# 선정 결과를 프로파일로 기록 → D-Racer-Kit/src/config/profiles/<track>.yaml
+```
+
+### 온라인 (D3-G, ROS2)
+```bash
+cd D-Racer-Kit && colcon build && source install/setup.bash
+# 수동 주행 + 인지 관찰 + 기록 (액추에이션 없음)
+ros2 launch control online_manual.launch.py profile:=$PWD/src/config/profiles/track2025.yaml
+# 자율 주행 (바퀴 들고 방향 확인 후 engage)
+ros2 launch control online_auto.launch.py
+ros2 param set /driving_node engage true     # wheels-off 확인 후에만
+# 정지: joystick X(E-stop) / 기록: joystick START(mp4+csv+bag)
+```
+
+### 데이터 흐름
+`camera → perception_node(/lane/state) → driving_node(/control, engage 게이트) → control_node(PWM)`.
+`recorder_node`가 START마다 `drive_<ts>.mp4`+`.csv` 저장, bag은 joystick_node가 담당. 인지/제어 코어는 `driving_core` 한 벌을 온·오프라인이 공유.
+
 ## 6. 진행 로그
 
 | 날짜 | 단계 | 내용 |
 |---|---|---|
 | 2026-07-05 | P0 | 워크트리 `SC2026(refactoring)` + 브랜치 `kos/track-test`(main 기준) 생성. 현재 구조 분석·목표 아키텍처·단계 계획 수립. 결정 4건 확정(§5). |
 | 2026-07-05 | P1 | `kos/hw-cam-track-test`의 구현 기능 전체를 main 위에 삽입(베이스라인). 노랑 밴드 튜닝(15/38/70/90)·`lane_compare.py` 보존. 전체 py_compile 통과. (커밋 e409b51) |
+| 2026-07-05 | P7 | launch 계층화: `online_manual.launch.py`(camera+control[joystick]+joystick+perception+recorder, 액추에이션 없음)와 `online_auto.launch.py`(+driving_node, engage 게이트·`ParameterValue(bool)`). 둘 다 `profile` 인자로 오프라인 프로파일 주입, `record_dir`·`bagfile` 리졸버. 운용 가이드(§7) 작성. 두 launch py_compile 통과. 리팩토링 P0~P7 완료. |
 | 2026-07-05 | P6 | 경량화: `opencv` 패키지 전체 제거(`opencv_node`는 미사용, `lane_detect_node`/`lane_follow_node`는 P3/P4의 perception/driving/recorder로 대체됨). 이를 참조하던 `lane_detect_manual`/`lane_follow` launch도 제거(P7에서 신규 대체). 코어 docstring의 옛 `local_scripts`/`opencv` 참조 정리. offline 도구 import·실행 정상 확인. |
 | 2026-07-05 | P5 | 프로파일 계약 배선: `driving_core/profile.py`(YAML 로더), 샘플 `config/profiles/track2025.yaml`(오프라인 선정 O1 튜닝밴드 + C2). `perception_node`/`driving_node`에 `profile` 파라미터 추가 — 설정 시 mode/params·controller/gains를 프로파일이 authoritative로 대체(점 4·11). end-to-end 검증: 프로파일→`make_cfg`/`make_ctrl` 정상 매핑(스키마 키 유효성 포함). |
 | 2026-07-05 | P4 | 기록 노드 `recorder`(`recorder_node`) 신설: joystick START(`is_recording`) 미러링으로 START→STOP마다 `drive_<ts>.mp4` + `.csv`(LaneState + 자율 `/control` + 수동 joystick 명령 동기 기록). rosbag은 joystick_node가 `data_acquisition.sh`로 이미 소유 → 중복 방지 위해 recorder는 mp4+csv만 담당(그래서 `data_acquisition.sh` 유지 필요 확인). py_compile 통과. |
