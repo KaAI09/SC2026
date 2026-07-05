@@ -69,10 +69,10 @@
 ### 💻 오프라인 — 제어 선정
 
 **Step 8** — (오프라인 3단계) 3차 주행 기록 기반 **제어값 계산 로직 테스트**
-- → **⬜ `offline/control_predict.py`** (영상+수동CSV+perception profile → 컨트롤러별 명령 open-loop 예측 → 예측 CSV)
+- → ✅ **`offline/control_predict.py`** (영상+수동CSV+perception profile → 컨트롤러 C1~C5 명령 open-loop 예측 → 예측 CSV). 실제 주행 CSV 검증은 3차 주행 후.
 
 **Step 9** — (오프라인 4단계) 계산 로직 비교·분석 → **최적 제어 로직 선정 + online 전달 파라미터/로직 output 생성**
-- → **⬜ `offline/control_select.py`** (open-loop 제어지표 랭킹, profile `control:` export)
+- → ✅ **`offline/control_select.py`** (open-loop 제어지표[smoothness·oscillation·response·saturation·human참조] 복합점수 랭킹, profile `control:` export)
 - 산출: `config/profiles/<track>.yaml` [control] — 완성된 profile
 
 ### 🖥 온라인 — 자율주행 & 보정
@@ -100,8 +100,8 @@
 | offline | `track_analyze.py` | 4 | ⬜ |
 | offline | `perception_preview.py` | 5 | ✅ |
 | offline | `perception_select.py` | 6 | ✅ |
-| offline | `control_predict.py` | 8 | ⬜ |
-| offline | `control_select.py` | 9 | ⬜ |
+| offline | `control_predict.py` | 8 | ✅ (실주행 CSV 검증 대기) |
+| offline | `control_select.py` | 9 | ✅ (실주행 CSV 검증 대기) |
 | online | profile 로더(perception/driving_node) | 10 | ✅ |
 | online | 보정 코드/노드 | 12 | ⬜ |
 

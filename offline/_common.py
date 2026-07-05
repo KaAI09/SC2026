@@ -6,6 +6,7 @@ Used by perception_preview / perception_select (and later control_predict /
 control_select). Rendering reads the SAME `dbg` intermediates that
 LanePipeline.process(debug=True) returns, so panels never re-implement the pipeline.
 """
+import csv
 import os
 
 import cv2
@@ -160,6 +161,30 @@ def quality_score(m):
     cj = 1.0 if cj != cj else cj                # nan (never valid) -> worst
     stability = 1.0 / (1.0 + JITTER_W * cj)
     return float(cov * stability * (1.0 - m['outlier_rate']))
+
+
+# ------------------------------------------------------------------ csv IO
+def read_csv(path):
+    with open(path, encoding='utf-8') as f:
+        return list(csv.DictReader(f))
+
+
+def col(rows, key, default=np.nan):
+    """Extract one column as a float array; blank/missing -> default (NaN)."""
+    out = []
+    for r in rows:
+        v = (r.get(key) or '').strip()
+        out.append(default if v == '' else float(v))
+    return np.array(out)
+
+
+def write_csv(path, fieldnames, rows):
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    with open(path, 'w', newline='', encoding='utf-8') as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        w.writerows(rows)
+    return path
 
 
 # ------------------------------------------------------------------ profile IO
