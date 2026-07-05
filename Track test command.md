@@ -52,7 +52,7 @@ source install/setup.bash
 ```bash
 ros2 launch control calibrate.launch.py
 ```
-- 웹 모니터 `http://<D3-G_IP>:5000` → 카메라 실시간 보며 각도/높이 조절.
+- 웹 모니터 `http://<D3-G_IP>:5000` → 카메라 실시간 보며 각도/높이 조절. (경량 모니터: 카메라+배터리+저장공간만 표시, battery_node 포함)
 - 조이스틱: **Y/B**=steering_trim −/+, **L1/R1**=accel_ratio −/+ (조정 즉시 `vehicle_config.yaml` 저장), **X**=E-stop.
 - 저장/로드 확인:
   ```bash

@@ -4,7 +4,10 @@ import time
 
 
 class MonitorState:
-    def __init__( self, stale_timeout_sec, image_source_width, image_source_height ):
+    """Thread-safe snapshot of the three monitored signals: camera image,
+    battery status, and storage usage."""
+
+    def __init__(self, stale_timeout_sec, image_source_width, image_source_height):
         self._lock = threading.Lock()
         self._stale_timeout_sec = stale_timeout_sec
 
@@ -17,40 +20,6 @@ class MonitorState:
         self._image_height = image_source_height
         self._image_updated_at = None
         self._image_updated_monotonic = None
-        self._debug_frames = {
-            'grayscale': None,
-            'blur': None,
-            'edge': None,
-        }
-        self._debug_widths = {
-            'grayscale': image_source_width,
-            'blur': image_source_width,
-            'edge': image_source_width,
-        }
-        self._debug_heights = {
-            'grayscale': image_source_height,
-            'blur': image_source_height,
-            'edge': image_source_height,
-        }
-        self._debug_updated_at = {
-            'grayscale': None,
-            'blur': None,
-            'edge': None,
-        }
-        self._debug_updated_monotonic = {
-            'grayscale': None,
-            'blur': None,
-            'edge': None,
-        }
-
-        self._throttle = None
-        self._steering = None
-        self._control_updated_at = None
-        self._control_updated_monotonic = None
-
-        self._is_recording = False
-        self._recording_updated_at = None
-        self._recording_updated_monotonic = None
 
         self._storage_used_percentage = None
         self._storage_used_bytes = None
@@ -86,33 +55,6 @@ class MonitorState:
             self._image_updated_at = datetime.now(timezone.utc)
             self._image_updated_monotonic = time.monotonic()
 
-    def update_control(self, throttle, steering):
-        clamped_throttle = max(-1.0, min(1.0, float(throttle)))
-        clamped_steering = max(-1.0, min(1.0, float(steering)))
-
-        with self._lock:
-            self._throttle = clamped_throttle
-            self._steering = clamped_steering
-            self._control_updated_at = datetime.now(timezone.utc)
-            self._control_updated_monotonic = time.monotonic()
-
-    def update_debug_image(self, image_key, frame_bytes, source_width, source_height):
-        if image_key not in self._debug_frames:
-            return
-
-        with self._lock:
-            self._debug_frames[image_key] = frame_bytes
-            self._debug_widths[image_key] = int(source_width)
-            self._debug_heights[image_key] = int(source_height)
-            self._debug_updated_at[image_key] = datetime.now(timezone.utc)
-            self._debug_updated_monotonic[image_key] = time.monotonic()
-
-    def update_recording(self, is_recording):
-        with self._lock:
-            self._is_recording = bool(is_recording)
-            self._recording_updated_at = datetime.now(timezone.utc)
-            self._recording_updated_monotonic = time.monotonic()
-
     def update_storage(self, used_bytes, total_bytes):
         if total_bytes <= 0:
             return
@@ -130,10 +72,6 @@ class MonitorState:
         with self._lock:
             return self._image_frame
 
-    def get_debug_frame(self, image_key):
-        with self._lock:
-            return self._debug_frames.get(image_key)
-
     def snapshot(self):
         with self._lock:
             battery_status = self._battery_status
@@ -144,19 +82,6 @@ class MonitorState:
             image_height = self._image_height
             image_updated_at = self._image_updated_at
             image_updated_monotonic = self._image_updated_monotonic
-            debug_widths = dict(self._debug_widths)
-            debug_heights = dict(self._debug_heights)
-            debug_updated_at = dict(self._debug_updated_at)
-            debug_updated_monotonic = dict(self._debug_updated_monotonic)
-
-            throttle = self._throttle
-            steering = self._steering
-            control_updated_at = self._control_updated_at
-            control_updated_monotonic = self._control_updated_monotonic
-
-            is_recording = self._is_recording
-            recording_updated_at = self._recording_updated_at
-            recording_updated_monotonic = self._recording_updated_monotonic
 
             storage_used_percentage = self._storage_used_percentage
             storage_used_bytes = self._storage_used_bytes
@@ -166,21 +91,11 @@ class MonitorState:
 
         battery_has_data = battery_status is not None
         image_has_data = image_updated_at is not None
-        control_has_data = throttle is not None and steering is not None
         storage_has_data = (
             storage_used_percentage is not None
             and storage_used_bytes is not None
             and storage_total_bytes is not None
         )
-        debug_image = {}
-        for key in ('grayscale', 'blur', 'edge'):
-            updated_at = debug_updated_at[key]
-            debug_image[key] = {
-                'has_data': updated_at is not None,
-                'updated_at': None if updated_at is None else updated_at.isoformat(),
-                'is_stale': self._is_stale(debug_updated_monotonic[key]),
-                'resolution_display': f"{debug_widths[key]}x{debug_heights[key]}",
-            }
 
         return {
             'battery': {
@@ -196,19 +111,6 @@ class MonitorState:
                 'is_stale': self._is_stale(image_updated_monotonic),
                 'resolution_display': f'{image_width}x{image_height}',
             },
-            'control': {
-                'has_data': control_has_data,
-                'updated_at': None if control_updated_at is None else control_updated_at.isoformat(),
-                'is_stale': self._is_stale(control_updated_monotonic),
-                'throttle': None if throttle is None else round(throttle, 2),
-                'steering': None if steering is None else round(steering, 2),
-            },
-            'recording': {
-                'has_data': recording_updated_at is not None,
-                'updated_at': None if recording_updated_at is None else recording_updated_at.isoformat(),
-                'is_stale': self._is_stale(recording_updated_monotonic),
-                'is_recording': bool(is_recording),
-            },
             'storage': {
                 'has_data': storage_has_data,
                 'updated_at': None if storage_updated_at is None else storage_updated_at.isoformat(),
@@ -223,5 +125,4 @@ class MonitorState:
                 'used_space_display': self._format_gb(storage_used_bytes),
                 'total_space_display': self._format_gb(storage_total_bytes),
             },
-            'debug_image': debug_image,
         }

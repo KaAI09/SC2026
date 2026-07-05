@@ -27,15 +27,16 @@
 
 ### 🚗 1차 주행 — 세팅 & 캘리브레이션
 
-**Step 1** — monitor + camera 노드 + 수동주행 노드(control, joystick) 실행
+**Step 1** — monitor + camera 노드 + 수동주행 노드(control, joystick) + battery 실행
 - 위치: 차량(D3-G) · Launch 1
-- 상태: ✅ 노드 존재 (camera/control/joystick/monitor)
+- 상태: ✅ 노드 존재 (camera/control/joystick/monitor/battery)
+- monitor는 경량화됨 — 실시간 카메라 + 배터리 + 저장공간 3종만 표시(제어/녹화/그래프/디버그 패널 제거로 지연 최소화). 배터리 패널을 위해 Launch 1에 `battery_node` 포함.
 
 **Step 2** — 수동 1차 주행 + 실시간 모니터링으로 **카메라 각도/높이 조절** + **steering_trim·accel_ratio 조정**
 - 위치: 차량 · **Launch 1**
 - 조작: joystick `calibration_mode` Y/B(trim), L1/R1(accel_ratio), START(세션), X(E-stop)
 - 저장: trim·accel_ratio → `config/vehicle_config.yaml` `STEER_TRIM`·`ACCEL_RATIO` ✅ (조정 시 즉시 저장, 이후 모든 launch가 로드)
-- → **Launch 1** ✅ `control/launch/calibrate.launch.py` (`camera + control + joystick[calibration_mode] + monitor`). D3-G 검증 대기.
+- → **Launch 1** ✅ `control/launch/calibrate.launch.py` (`camera + control + joystick[calibration_mode] + monitor + battery`). D3-G 검증 대기.
 
 ### 🚗 2차 주행 — 주행영상 확보
 
@@ -94,7 +95,7 @@
 
 | 종류 | 파일 | 단계 | 상태 |
 |---|---|---|---|
-| launch | **Launch 1** `calibrate.launch.py` | 1-2 | ✅ (accel_ratio 저장 포함, D3-G 검증 대기) |
+| launch | **Launch 1** `calibrate.launch.py` | 1-2 | ✅ (camera+control+joystick+monitor[경량]+battery, accel_ratio 저장 포함, D3-G 검증 대기) |
 | launch | **Launch 2** `record_manual.launch.py` | 3 | ✅ (recorder 원본영상, perception 없음) |
 | launch | **Launch 3** `online_manual.launch.py` | 7 | ✅ 기존 재사용 (camera+control+joystick+perception+recorder) |
 | launch | **최종 자율** `online_auto.launch.py` | 11 | ✅ (perception+driving[engage]+recorder) |

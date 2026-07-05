@@ -1,10 +1,14 @@
 """Track-test pipeline — Launch 1 (calibration & setup).
 
 1st manual run. Brings up camera + manual driving (control + joystick) + the live
-web monitor so the operator can (a) adjust camera angle/height watching the live
-feed and (b) tune steering_trim (joystick Y/B) and accel_ratio (joystick L1/R1).
-Both are calibration_mode edits and are PERSISTED to vehicle_config.yaml
+web monitor (+ battery publisher feeding the monitor battery panel) so the
+operator can (a) adjust camera angle/height watching the live feed and (b) tune
+steering_trim (joystick Y/B) and accel_ratio (joystick L1/R1). Both are
+calibration_mode edits and are PERSISTED to vehicle_config.yaml
 (STEER_TRIM + ACCEL_RATIO), so every later launch loads them automatically.
+
+The slim monitor shows only the live camera, storage, and battery — this is the
+only pipeline launch that runs the web monitor, so battery_node runs here too.
 
 No perception, no recorder, no autonomous actuation — setup only.
 
@@ -54,5 +58,10 @@ def generate_launch_description():
                          # calibration has no perception -> show the RAW camera feed
                          # (overrides any vehicle_config IMAGE_TOPIC drift to /lane/debug)
                          'image_topic': '/camera/image/compressed'}],
+        ),
+        Node(
+            package='battery', executable='battery_node', name='battery_node',
+            output='screen',
+            # publishes /battery_status -> monitor battery panel
         ),
     ])

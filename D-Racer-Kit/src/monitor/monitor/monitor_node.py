@@ -4,8 +4,6 @@ import shutil
 
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 from battery_msgs.msg import Battery
-from control_msgs.msg import Control
-from joystick_msgs.msg import Joystick
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -13,7 +11,6 @@ from sensor_msgs.msg import CompressedImage
 import yaml
 
 from .flask_app_factory import FLASK_IMPORT_ERROR, FlaskServerThread, create_app
-from .graph_utils import build_graph_snapshot
 from .image_utils import extract_jpeg_dimensions
 from .monitor_state import MonitorState
 
@@ -45,7 +42,16 @@ def resolve_resource_path(filename):
 
     raise FileNotFoundError(f'Unable to find resource file: {filename}')
 
+
 class MonitorNode(Node):
+    """Lightweight web dashboard: live camera + storage + battery only.
+
+    Deliberately minimal — it subscribes to just the camera image and battery
+    topics (plus a storage poll timer) so the web view stays real-time and does
+    not add ROS-graph load. Control/joystick/debug-image/ROS-graph panels were
+    removed to keep latency low during track tests.
+    """
+
     def __init__(self):
         super().__init__('monitor_node')
 
@@ -57,12 +63,6 @@ class MonitorNode(Node):
         self.declare_parameter('vehicle_config_file', get_default_vehicle_config_path())
         self.declare_parameter('battery_topic', 'battery_status')
         self.declare_parameter('image_topic', '')   # '' -> vehicle_config IMAGE_TOPIC; set to override
-        self.declare_parameter('debug_image',True)
-        self.declare_parameter('opencv_grayscale_topic', '/opencv/image/grayscale')
-        self.declare_parameter('opencv_blur_topic', '/opencv/image/blur')
-        self.declare_parameter('opencv_edge_topic', '/opencv/image/edge')
-        self.declare_parameter('control_topic', '/control')
-        self.declare_parameter('joystick_topic', 'joystick')
         self.declare_parameter('storage_path', '/')
         self.declare_parameter('storage_poll_interval_sec', 1.0)
         self.declare_parameter('web_host', '0.0.0.0')
@@ -87,17 +87,6 @@ class MonitorNode(Node):
         self.image_topic = (_img_param                                  # launch override wins
                             or self.get_yaml_or_param_str(yaml_config, 'IMAGE_TOPIC', 'image_topic')
                             or '/camera/image/compressed')
-        self.control_topic = self.get_yaml_or_param_str(yaml_config, 'CONTROL_TOPIC', 'control_topic')
-        self.debug_image = self.get_yaml_or_param_bool_multi(yaml_config, ('OPENCV_DEBUG_MODE', 'DEBUG_IMAGE'), 'debug_image')
-        self.opencv_grayscale_topic = self.get_yaml_or_param_str(yaml_config, 'OPENCV_GRAYSCALE_TOPIC', 'opencv_grayscale_topic')
-        self.opencv_blur_topic = self.get_yaml_or_param_str(yaml_config, 'OPENCV_BLUR_TOPIC', 'opencv_blur_topic')
-        self.opencv_edge_topic = self.get_yaml_or_param_str(yaml_config, 'OPENCV_EDGE_TOPIC', 'opencv_edge_topic')
-        self.joystick_topic = self.get_yaml_or_param_str(yaml_config, 'JOYSTICK_TOPIC', 'joystick_topic')
-        if not self.control_topic:
-            # Backward compatibility for legacy typo key.
-            self.control_topic = str(yaml_config.get('CONTORL_TOPIC', '')).strip()
-        if not self.control_topic:
-            self.control_topic = str(self.get_parameter('control_topic').value)
 
         requested_storage_path = Path(
             self.get_yaml_or_param_str(yaml_config, 'STORAGE_PATH', 'storage_path')
@@ -133,7 +122,6 @@ class MonitorNode(Node):
                 f'Storage path {requested_storage_path} does not exist. Falling back to /.'
             )
 
-        self.header_logo_path = resolve_resource_path('Telechips-CI-White.png')
         self.telechips_logo_path = resolve_resource_path('Telechips-CI-White.png')
         self.topst_logo_path = resolve_resource_path('TOPST-Logo(White).png')
         self.state = MonitorState(
@@ -146,20 +134,13 @@ class MonitorNode(Node):
             self.page_title,
             self.battery_topic,
             self.image_topic,
-            self.control_topic,
             self.storage_path,
             self.refresh_interval_ms,
             self.image_refresh_interval_ms,
-            self.header_logo_path,
             self.telechips_logo_path,
             self.topst_logo_path,
             self.image_display_width,
             self.image_display_height,
-            self.debug_image,
-            self.opencv_grayscale_topic,
-            self.opencv_blur_topic,
-            self.opencv_edge_topic,
-            graph_snapshot_provider=self.get_graph_snapshot,
         )
         self.server_thread = FlaskServerThread(self.app, self.web_host, self.web_port)
 
@@ -175,37 +156,6 @@ class MonitorNode(Node):
             self.image_callback,
             10,
         )
-        if self.debug_image:
-            self.create_subscription(
-                CompressedImage,
-                self.opencv_grayscale_topic,
-                self.debug_grayscale_callback,
-                10,
-            )
-            self.create_subscription(
-                CompressedImage,
-                self.opencv_blur_topic,
-                self.debug_blur_callback,
-                10,
-            )
-            self.create_subscription(
-                CompressedImage,
-                self.opencv_edge_topic,
-                self.debug_edge_callback,
-                10,
-            )
-        self.create_subscription(
-            Control,
-            self.control_topic,
-            self.control_callback,
-            10,
-        )
-        self.create_subscription(
-            Joystick,
-            self.joystick_topic,
-            self.joystick_callback,
-            10,
-        )
         self.storage_timer = self.create_timer(
             self.storage_poll_interval_sec,
             self.storage_timer_callback,
@@ -219,16 +169,10 @@ class MonitorNode(Node):
             f'[Monitor node started] \n'
             f'battery_topic={self.battery_topic} \n'
             f'image_topic={self.image_topic} \n'
-            f'debug_image={self.debug_image}, \n'
-            f'control_topic={self.control_topic}, \n'
-            f'joystick_topic={self.joystick_topic}, \n'
             f'storage_path={self.storage_path}, \n'
-            f'web=http://{display_host}:{self.web_port} \n' 
+            f'web=http://{display_host}:{self.web_port} \n'
             f'vehicle_config_file={self.vehicle_config_file} \n'
         )
-
-    def get_graph_snapshot(self):
-        return build_graph_snapshot(self)
 
     def load_vehicle_config(self):
         if not os.path.exists(self.vehicle_config_file):
@@ -259,22 +203,6 @@ class MonitorNode(Node):
                 return int(raw_value)
         return int(self.get_parameter(param_key).value)
 
-    def get_yaml_or_param_bool(self, yaml_config, yaml_key, param_key):
-        raw_value = yaml_config.get(yaml_key)
-        if raw_value is not None:
-            if isinstance(raw_value, bool):
-                return raw_value
-            if isinstance(raw_value, str):
-                return raw_value.strip().lower() in ('1', 'true', 'yes', 'on')
-            return bool(raw_value)
-        return bool(self.get_parameter(param_key).value)
-
-    def get_yaml_or_param_bool_multi(self, yaml_config, yaml_keys, param_key):
-        for yaml_key in yaml_keys:
-            if yaml_key in yaml_config:
-                return self.get_yaml_or_param_bool(yaml_config, yaml_key, param_key)
-        return bool(self.get_parameter(param_key).value)
-
     def battery_callback(self, msg):
         self.state.update_battery(msg.battery_status)
 
@@ -292,41 +220,6 @@ class MonitorNode(Node):
             self.state.update_image(frame_bytes, width, height)
         except Exception as exc:
             self.get_logger().error(f'Failed to process {self.image_topic} frame: {exc}')
-
-    def control_callback(self, msg):
-        self.state.update_control(msg.throttle, msg.steering)
-
-        if self.debug_log:
-            self.get_logger().info(
-                f'Control updated: throttle={msg.throttle:.2f}, steering={msg.steering:.2f}'
-            )
-
-    def _debug_image_callback(self, msg, image_key, topic):
-        try:
-            frame_bytes = bytes(msg.data)
-            width, height = extract_jpeg_dimensions(frame_bytes)
-            if width is None or height is None:
-                width = self.image_source_width
-                height = self.image_source_height
-
-            self.state.update_debug_image(image_key, frame_bytes, width, height)
-        except Exception as exc:
-            self.get_logger().error(f'Failed to process {topic} frame: {exc}')
-
-    def debug_grayscale_callback(self, msg):
-        self._debug_image_callback(msg, 'grayscale', self.opencv_grayscale_topic)
-
-    def debug_blur_callback(self, msg):
-        self._debug_image_callback(msg, 'blur', self.opencv_blur_topic)
-
-    def debug_edge_callback(self, msg):
-        self._debug_image_callback(msg, 'edge', self.opencv_edge_topic)
-
-    def joystick_callback(self, msg):
-        self.state.update_recording(msg.is_recording)
-
-        if self.debug_log:
-            self.get_logger().info(f'Recording updated: is_recording={msg.is_recording}')
 
     def storage_timer_callback(self):
         try:

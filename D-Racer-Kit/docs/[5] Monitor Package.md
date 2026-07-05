@@ -3,17 +3,16 @@
 <br>
 
 ## 1) Monitor 패키지가 하는 일
-`monitor` 패키지는 ROS 토픽 데이터를 웹 대시보드로 보여주는 패키지입니다.
+`monitor` 패키지는 핵심 상태만 웹 대시보드로 보여주는 **경량 모니터**입니다.
+트랙 테스트 중 지연을 줄이기 위해 구독 토픽을 최소화했습니다.
 
-핵심 기능:
-- 배터리 상태 표시
-- 메인 카메라 스트림 표시
-- 제어값(Throttle/Steering) 표시 - 자율주행 모드일 때만 표시
-- 녹화 상태 표시
+핵심 기능(3종만):
+- 실시간 메인 카메라 스트림 표시
+- 배터리 잔량 표시
 - 저장장치 사용량 표시
-- ROS2 노드&토픽 상태 표시
-- `debug_image=true`일 때 OpenCV 처리 영상 3종(Grayscale/Blur/Edge) 표시
-  - 자세한 사항은 [9] OpenCV Package 가이드 참고
+
+> 제어값/녹화 상태/ROS 노드·토픽 그래프/OpenCV 디버그 영상 패널은
+> 지연 최소화를 위해 **제거**되었습니다. (구독 토픽 2개 + 저장공간 폴링 타이머만 사용)
 
 <br>
 
@@ -22,12 +21,10 @@
 `monitor_node`는 다음 순서로 동작합니다.
 
 1. ROS 파라미터와 `vehicle_config.yaml`을 읽음
-2. 필요한 토픽을 subscribe
+2. 카메라(`image_topic`)·배터리(`battery_topic`) 토픽만 subscribe, 저장공간은 타이머로 폴링
 3. 수신 데이터를 `MonitorState`에 저장
-4. 내장 Flask 서버가 `/api/status`, `/api/frame*` API로 상태/이미지를 제공
+4. 내장 Flask 서버가 `/api/status`, `/api/frame`, `/api/frame/placeholder` API로 상태/이미지를 제공
 5. 웹 페이지(`index.html` + `app.js`)가 API를 주기적으로 호출해 화면 갱신
-
-위와 같이, **ROS 토픽 웹 대시보드 제공**을 하나의 노드에서 처리합니다.
 
 <br>
 
@@ -44,26 +41,19 @@ source install/setup.bash
 ros2 run monitor monitor_node
 ```
 
-### 3-3. OpenCV 디버그 패널 포함 실행
-```bash
-ros2 run monitor monitor_node --ros-args -p debug_image:=true
-```
+> 파이프라인에서는 `calibrate.launch.py`(Launch 1)가 `monitor_node`와
+> `battery_node`를 함께 띄웁니다. 배터리 패널이 값을 보이려면 `battery_node`가
+> `/battery_status`를 publish 해야 하므로, 웹 모니터를 쓰는 유일한 런치인 Launch 1에
+> battery_node가 포함되어 있습니다.
 
-### 3-4. 호스트/포트 변경 실행 예시
+### 3-3. 호스트/포트 변경 실행 예시
 ```bash
 ros2 run monitor monitor_node --ros-args \
   -p web_host:=0.0.0.0 \
   -p web_port:=5000
 ```
-혹은, config/vehicle_config.yaml 파일에서 수정 후 적용해도 동일합니다.
+혹은, `config/vehicle_config.yaml` 파일에서 수정 후 적용해도 동일합니다.
 브라우저 접속 주소는 로그의 `web=http://...` 값을 확인하면 됩니다.(사용자의 IP)
-해당 주소에 접속하면 Figure 1과 같이 대시보드가 웹 화면에 동작합니다.
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/topst-development/D-Racer-Kit/refs/heads/dev/docs/asset/5/figure1-dashboard-default.png" alt="Dashboard Default">
-  <br>
-  <b>Figure 1. Dashboard Default</b>
-</p>
 
 <br>
 
@@ -74,16 +64,10 @@ ros2 run monitor monitor_node --ros-args \
 |---|---|---|---|
 | `vehicle_config_file` | string | 자동 탐색 경로 | YAML 설정 파일 경로 |
 | `battery_topic` | string | `battery_status` | 배터리 토픽 |
-| `image_topic` | string | `/camera/image/compressed` | 메인 카메라 이미지 토픽 (`sensor_msgs/CompressedImage`) |
-| `debug_image` | bool | `true` | OpenCV 디버깅용 영상 패널 사용 여부 |
-| `opencv_grayscale_topic` | string | `/opencv/image/grayscale` | 디버깅용 grayscale 이미지 토픽 |
-| `opencv_blur_topic` | string | `/opencv/image/blur` | 디버깅용 blur 이미지 토픽 |
-| `opencv_edge_topic` | string | `/opencv/image/edge` | 디버깅용 edge 이미지 토픽 |
-| `control_topic` | string | `/control` | 제어 토픽 |
-| `joystick_topic` | string | `joystick` | 조이스틱/녹화 상태 토픽 |
+| `image_topic` | string | `''`→YAML/`/camera/image/compressed` | 메인 카메라 이미지 토픽 (`sensor_msgs/CompressedImage`). launch override 우선 |
 | `storage_path` | string | `/` | 저장공간 사용량 계산 대상 경로 |
 | `storage_poll_interval_sec` | float | `1.0` | 저장공간 갱신 주기(초) |
-| `web_host` | string | `192.168.0.12` | Flask 바인딩 호스트(수정가능) |
+| `web_host` | string | `0.0.0.0` | Flask 바인딩 호스트 |
 | `web_port` | int | `5000` | Flask 포트 |
 | `page_title` | string | `D-Racer Monitor` | 대시보드 페이지 제목 |
 | `refresh_interval_ms` | int | `1000` | 상태 API polling 주기(ms) |
@@ -93,47 +77,33 @@ ros2 run monitor monitor_node --ros-args \
 | `image_source_height` | int | `120` | 원본 이미지 높이 fallback |
 | `image_display_width` | int | `160` | placeholder 표시 폭 |
 | `image_display_height` | int | `120` | placeholder 표시 높이 |
-| `debug_log` | bool | `false` | 모니터링 디버깅 로그 출력 여부 |
+| `debug_log` | bool | `false` | 배터리/이미지 디버깅 로그 출력 여부 |
 
 참고:
-- 일부 값은 `vehicle_config.yaml`의 키(`BATTERY_TOPIC`, `IMAGE_TOPIC`, `DEBUG_IMAGE` 등)로 덮어쓸 수 있습니다.
-- `debug_image=true`일 때만 OpenCV 3개 토픽을 subscribe 합니다.
+- 일부 값은 `vehicle_config.yaml`의 키(`BATTERY_TOPIC`, `IMAGE_TOPIC`, `STORAGE_PATH`, `WEB_HOST`, `WEB_PORT`, `IMAGE_DISPLAY_WIDTH/HEIGHT`)로 덮어쓸 수 있습니다.
 
 <br>
 
 
 ## 5) 입력 토픽 요약
-`monitor_node`가 subscribe하는 대표 토픽:
-- 배터리: `battery_topic`
-- 메인 카메라: `image_topic`
-- 제어: `control_topic`
-- 녹화 상태: `joystick_topic`
-- 디버그 영상(옵션): `opencv_grayscale_topic`, `opencv_blur_topic`, `opencv_edge_topic`
+`monitor_node`가 subscribe하는 토픽(2개):
+- 배터리: `battery_topic` (`/battery_status`)
+- 메인 카메라: `image_topic` (`/camera/image/compressed`)
+
+저장공간은 토픽이 아니라 `storage_poll_interval_sec` 주기의 로컬 디스크 폴링으로 갱신합니다.
 
 <br>
 
 
-## 6) ROS Node / Topic 그래프 확인
-모니터 노드를 실행하면 자동으로 현재 D-Racer에서 실행 중인 노드와 토픽의 상태를 확인할 수 있습니다.(Figure 2)
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/topst-development/D-Racer-Kit/refs/heads/dev/docs/asset/5/figure2-ros-graph.png" alt="ROS2 Node Topic Status">
-  <br>
-  <b>Figure 2. Dashboard-ROS2 Node & Topic Status</b>
-</p>
-
-<br>
-
-
-## 7) 문제 해결 체크리스트
-OpenCV 디버깅 영상 패널이 안 보일 때:
-1. `debug_image`가 `true`인지 확인
-2. `/opencv/image/grayscale`, `/opencv/image/blur`, `/opencv/image/edge` 토픽이 실제 publish 중인지 확인
-3. `monitor_node` 실행 로그의 토픽/웹 주소가 기대값과 일치하는지 확인
+## 6) 문제 해결 체크리스트
+- 카메라 화면이 placeholder로만 보일 때: `image_topic`이 실제 publish 중인지 (`ros2 topic hz <topic>`) 확인.
+- 배터리가 계속 `WAITING`일 때: `battery_node`가 실행 중이고 `/battery_status`를 publish 하는지 확인
+  (파이프라인에서는 `calibrate.launch.py`에 포함).
+- 웹 접속이 안 될 때: `monitor_node` 실행 로그의 `web=http://...` 주소/포트가 기대값과 일치하는지 확인.
 
 유용한 확인 명령:
 ```bash
-ros2 param get /monitor_node debug_image
-ros2 topic list | grep opencv
-ros2 topic hz /opencv/image/grayscale
+ros2 topic hz /camera/image/compressed
+ros2 topic echo /battery_status --once
+ros2 param get /monitor_node web_port
 ```

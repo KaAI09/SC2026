@@ -83,8 +83,8 @@ control:    {controller: C2, kp: 0.5, kd: 0.1, steer_max: 0.8, throttle_base: 0.
 | `lane_msgs` | **신규** | LaneState 메시지 |
 | `recorder` | **신규** | 통합 기록 노드(mp4+CSV+bag) |
 | `opencv`(`opencv_node`) | **제거** | 단순 재발행 노드, `perception`이 대체 |
-| `monitor` | **유지** | 초반 카메라 각도 세팅·모니터링용 |
-| `battery` | **유지** | `auto_driving.launch`에서 사용 |
+| `monitor` | **유지·경량화** | Launch 1 카메라 세팅 모니터링. 카메라+배터리+저장소 3종만 구독(제어/녹화/ROS그래프/OpenCV디버그 패널·구독 제거로 지연 최소화) |
+| `battery` | **유지** | monitor 배터리 패널용 → `calibrate.launch`(Launch 1)에서 실행 |
 | `data_acquisition.sh` | **유지 or 흡수** | START 버튼 bag 녹화용. 기록 노드로 흡수 가능 |
 | `image_raw.jpg` | **제거 후보** | 샘플 이미지 |
 
@@ -107,6 +107,8 @@ control:    {controller: C2, kp: 0.5, kd: 0.1, steer_max: 0.8, throttle_base: 0.
 2. **공유 코어 = 단일 모듈** — `src/driving_core/`(ament_python 순수 파이썬 패키지)에 인지/제어 코어를 한 벌만 두고, 온라인 노드는 ROS import, 오프라인은 venv에 `pip install -e`(또는 PYTHONPATH)로 동일 코어 import. 복붙 2벌 제거.
 3. **제거 = `opencv_node`만.** `monitor`는 초반 카메라 각도 세팅·모니터링용으로 **유지**. `data_acquisition.sh`는 주행 테스트 중 START 버튼 bag 녹화에 필요하면 **유지 또는 기록 노드로 흡수**.
 4. **오프라인 도구 = 신규 최상위 `offline/`** 로 이동(온라인 `src/`와 물리 분리).
+5. **monitor 경량화(트랙 테스트 지연 제거).** `monitor_node`는 카메라 이미지 + 배터리 + 저장공간 3종만 유지. 제어(control) 구독·녹화(joystick) 구독·ROS 그래프(`/api/graph`, `graph_utils.py`)·OpenCV 디버그 영상 3종(grayscale/blur/edge) 구독과 대응 웹 패널을 전부 제거. dead 설정키 `CONTROL_TOPIC`·`JOYSTICK_TOPIC`·`OPENCV_DEBUG_MODE`도 `vehicle_config.yaml`에서 삭제. 배터리 패널이 값을 받도록 `battery_node`를 `calibrate.launch.py`(monitor를 띄우는 유일한 런치)에 추가.
+6. **legacy launch 정리.** 파이프라인 4개(calibrate/record_manual/online_manual/online_auto) 기준으로 `auto_driving.launch.py`(존재하지 않는 `inference` 패키지 참조·실행 불가) + `record_driving.launch.py`(rosbag `-a`, recorder_node mp4/csv 파이프라인과 무관·중복) 삭제. `manual_driving.launch.py`(벤더 docs가 최소 수동 런치로 참조)·`actuation_test.launch.py`(wheels-off 액추에이션 진단·전용 스크립트 동반)는 유지. 노드명은 이미 전부 일관(entry-point=모듈=내부명)이라 리네임 불필요.
 
 ## 7. 운용 가이드 (리팩토링 후)
 
