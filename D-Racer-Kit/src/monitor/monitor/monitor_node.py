@@ -56,7 +56,7 @@ class MonitorNode(Node):
 
         self.declare_parameter('vehicle_config_file', get_default_vehicle_config_path())
         self.declare_parameter('battery_topic', 'battery_status')
-        self.declare_parameter('image_topic', '/camera/image/compressed')
+        self.declare_parameter('image_topic', '')   # '' -> vehicle_config IMAGE_TOPIC; set to override
         self.declare_parameter('debug_image',True)
         self.declare_parameter('opencv_grayscale_topic', '/opencv/image/grayscale')
         self.declare_parameter('opencv_blur_topic', '/opencv/image/blur')
@@ -83,7 +83,10 @@ class MonitorNode(Node):
         yaml_config = self.load_vehicle_config()
 
         self.battery_topic = self.get_yaml_or_param_str(yaml_config, 'BATTERY_TOPIC', 'battery_topic')
-        self.image_topic = self.get_yaml_or_param_str(yaml_config, 'IMAGE_TOPIC', 'image_topic')
+        _img_param = str(self.get_parameter('image_topic').value).strip()
+        self.image_topic = (_img_param                                  # launch override wins
+                            or self.get_yaml_or_param_str(yaml_config, 'IMAGE_TOPIC', 'image_topic')
+                            or '/camera/image/compressed')
         self.control_topic = self.get_yaml_or_param_str(yaml_config, 'CONTROL_TOPIC', 'control_topic')
         self.debug_image = self.get_yaml_or_param_bool_multi(yaml_config, ('OPENCV_DEBUG_MODE', 'DEBUG_IMAGE'), 'debug_image')
         self.opencv_grayscale_topic = self.get_yaml_or_param_str(yaml_config, 'OPENCV_GRAYSCALE_TOPIC', 'opencv_grayscale_topic')

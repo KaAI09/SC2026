@@ -50,6 +50,9 @@ def generate_launch_description():
         Node(
             package='monitor', executable='monitor_node', name='monitor_node',
             output='screen',
-            parameters=[{'vehicle_config_file': vehicle_config}],
+            parameters=[{'vehicle_config_file': vehicle_config,
+                         # calibration has no perception -> show the RAW camera feed
+                         # (overrides any vehicle_config IMAGE_TOPIC drift to /lane/debug)
+                         'image_topic': '/camera/image/compressed'}],
         ),
     ])
