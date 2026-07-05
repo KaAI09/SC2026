@@ -48,8 +48,8 @@
 
 **Step 4** — 수동 영상 기반 **트랙 컨디션 파라미터 분석**(밴드값·색상필드·ROI·차선폭)
 - 위치: 오프라인(로컬)
-- → **⬜ `offline/track_analyze.py`** (신규): 클립에서 흰/노랑 HSV 분포, ROI 히트맵, 차선폭 측정 → G1~G6 밴드/ROI 기본값 산출.
-  (2025 대시캠에 대해 이미 프로토타이핑: white S60/V185, yellow H18-36/S65/V100, roi 0.30-0.35/T0.80 — [offline/LANE_DETECTION.md](offline/LANE_DETECTION.md) §4)
+- → ✅ **`offline/track_analyze.py`**: 클립에서 흰/노랑 HSV 밴드, ROI 히트맵, 차선폭(lane_width_default) 측정 → 제안 Cfg override 출력 + heatmap/masks PNG. 프로파일은 쓰지 않음(측정만).
+  (2025 대시캠 실측: white S≤35/V≥175, yellow H20-34/S63/V111, lane_width≈0.44. roi_top_frac는 근접영상 특성상 낮게 나와 heatmap로 확인 — 차량 카메라에선 자동값 적절.)
 
 **Step 5** — (오프라인 1단계) 도출 파라미터로 **G1~G6 적용 테스트**
 - → ✅ **`offline/perception_preview.py`** (`--group G#`, 3패널)
@@ -85,7 +85,8 @@
 - 안전: 바퀴 들고 방향확인 → 저속 트랙, X E-stop 상시, watchdog
 
 **Step 12** — 3차(자율) 기록 기반 **파라미터 보정**
-- → **⬜ online 보정 코드**: 자율 기록(제어로그+검출)에서 setpoint·게인 편차를 재추정해 profile 갱신(오프라인 재피팅 or 온라인 보정 노드). 설계 논의 대상.
+- → **⬜ 보류(TODO)**: 자율 기록(제어로그+검출)에서 setpoint·게인 편차를 재추정해 profile 갱신(오프라인 재피팅 or 온라인 보정 노드).
+- **진행 시점**: 전체 파이프라인 점검 + **실주행 테스트(D3-G) 완료 후**에 설계·구현. 실주행 데이터가 있어야 보정이 의미 있음.
 
 ---
 
@@ -97,7 +98,7 @@
 | launch | **Launch 2** `record_manual.launch.py` | 3 | ✅ (recorder 원본영상, perception 없음) |
 | launch | **Launch 3** `online_manual.launch.py` | 7 | ✅ 기존 재사용 (camera+control+joystick+perception+recorder) |
 | launch | **최종 자율** `online_auto.launch.py` | 11 | ✅ (perception+driving[engage]+recorder) |
-| offline | `track_analyze.py` | 4 | ⬜ |
+| offline | `track_analyze.py` | 4 | ✅ |
 | offline | `perception_preview.py` | 5 | ✅ |
 | offline | `perception_select.py` | 6 | ✅ |
 | offline | `control_predict.py` | 8 | ✅ (실주행 CSV 검증 대기) |
