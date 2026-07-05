@@ -65,7 +65,7 @@ class MonitorNode(Node):
         self.declare_parameter('joystick_topic', 'joystick')
         self.declare_parameter('storage_path', '/')
         self.declare_parameter('storage_poll_interval_sec', 1.0)
-        self.declare_parameter('web_host', '192.168.0.12')
+        self.declare_parameter('web_host', '0.0.0.0')
         self.declare_parameter('web_port', 5000)
         self.declare_parameter('page_title', 'D-Racer Monitor')
         self.declare_parameter('refresh_interval_ms', 1000)
