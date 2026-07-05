@@ -1,21 +1,24 @@
 # Driving profile — 2025 test track (yellow-tape shortcut + roundabout).
 #
 # Single offline -> online contract: the perception mode/params and controller/
-# gains the offline evaluation (offline/lane_compare.py, offline/control_eval.py)
-# selected for this track. perception_node and driving_node load this one file
-# via the `profile` parameter instead of many separate ROS params.
+# gains the offline evaluation (offline/perception_select.py writes [perception],
+# offline/control_select.py writes [control]) selected for this track.
+# perception_node and driving_node load this one file via the `profile` parameter
+# instead of many separate ROS params.
 #
 # Keys map 1:1 to driving_core.lane_core.Cfg (perception) and
 # driving_core.control_core.CtrlCfg (control). Unspecified keys use presets.
 name: track2025
 
 perception:
-  mode: O1                 # yellow/orange-tape preset
-  roi_top_frac: 0.45
-  orange_h_lo: 15          # measured tape hue band on this track (H ~22-32)
-  orange_h_hi: 38
-  orange_s_min: 70
-  orange_v_min: 90
+  mode: G5                 # white+yellow fused (provisional; perception_select confirms)
+  colors: [white, yellow]
+  roi_top_frac: 0.30       # 2025 dashcam heatmap (yellow/roundabout keeps more height)
+  trap_top_w: 0.80
+  yellow_h_lo: 18          # 2025 dashcam measured band (H 22-32, S>=66, V>=112)
+  yellow_h_hi: 36
+  yellow_s_min: 65
+  yellow_v_min: 100
 
 control:
   controller: C2           # PD baseline

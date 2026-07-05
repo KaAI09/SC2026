@@ -98,6 +98,7 @@ control:    {controller: C2, kp: 0.5, kd: 0.1, steer_max: 0.8, throttle_base: 0.
 - [x] **P5** 프로파일 YAML 배선(오프라인 산출 → 온라인 로드)
 - [x] **P6** 미사용 패키지/노드 정리·경량화
 - [x] **P7** launch 계층화(offline / online-manual / online-auto) + 문서화
+- [ ] **P8** `offline/` 도구 재구성: 지각 2 + 제어 2 + 공용 1 대칭 구조로 분리, open-loop 지표·profile 핸드오프 배선 (설계 [offline/PIPELINE.md](offline/PIPELINE.md))
 - 각 단계: macOS 정적검사(py_compile/flake8/코어 유닛테스트) → D3-G 빌드·실차검증 → 본 문서 로그 기록.
 
 ## 5. 결정 사항 (LOCKED, 2026-07-05)
@@ -113,12 +114,16 @@ control:    {controller: C2, kp: 0.5, kd: 0.1, steer_max: 0.8, throttle_base: 0.
 ```bash
 # 최초 1회: 공유 코어 설치
 .venv/bin/pip install -e D-Racer-Kit/src/driving_core
-# 주행 영상으로 조합 비교 → 최적 (mode+params, controller+gains) 선정
+# 주행 영상으로 조합 비교 → 최적 (mode+params, controller+gains) 선정 (P8 이후 도구명)
 cd offline
-../.venv/bin/python lane_compare.py CLIP.mp4 --modes M1,M2,O1,O2 --frames 4
-../.venv/bin/python lane_preview.py CLIP.mp4 --mode O1 --roi-top 0.45
-../.venv/bin/python control_eval.py rslt/drive_XXXX.csv
-# 선정 결과를 프로파일로 기록 → D-Racer-Kit/src/config/profiles/<track>.yaml
+../.venv/bin/python perception_preview.py CLIP.mp4 --mode O1 --roi-top 0.45   # ① 3패널 확인
+../.venv/bin/python perception_select.py CLIP.mp4 --modes M1,M2,O1,O2 \
+    --export ../D-Racer-Kit/src/config/profiles/track2025.yaml                # ② [perception] export
+../.venv/bin/python control_predict.py rslt/drive_XXXX.mp4 --csv rslt/drive_XXXX.csv \
+    --profile ../D-Racer-Kit/src/config/profiles/track2025.yaml --controllers C1,C2,C4  # ③ 예측
+../.venv/bin/python control_select.py rslt/pred_XXXX.csv \
+    --export ../D-Racer-Kit/src/config/profiles/track2025.yaml                # ④ [control] export
+# 최종 산출물 = 채워진 프로파일 D-Racer-Kit/src/config/profiles/<track>.yaml
 ```
 
 ### 온라인 (D3-G, ROS2)
@@ -140,6 +145,7 @@ ros2 param set /driving_node engage true     # wheels-off 확인 후에만
 
 | 날짜 | 단계 | 내용 |
 |---|---|---|
+| 2026-07-05 | P8(설계) | `offline/` 재구성 설계 확정(코드 전 문서화). 5파일 대칭 구조(`perception_preview`/`perception_select`/`control_predict`/`control_select`/`_common`), 데이터 흐름·profile 단일 in-place 핸드오프, open-loop 평가(covariate shift로 폐루프 궤적지표 불가 → 지각지표는 File2·명령품질지표는 File4로 분리). 신규 [offline/PIPELINE.md](offline/PIPELINE.md), `LANE_DETECTION.md`/`CONTROL_DESIGN.md` 갱신, profile/REFACTORING 문서 정합. 구현은 P8 후속. |
 | 2026-07-05 | P0 | 워크트리 `SC2026(refactoring)` + 브랜치 `kos/track-test`(main 기준) 생성. 현재 구조 분석·목표 아키텍처·단계 계획 수립. 결정 4건 확정(§5). |
 | 2026-07-05 | P1 | `kos/hw-cam-track-test`의 구현 기능 전체를 main 위에 삽입(베이스라인). 노랑 밴드 튜닝(15/38/70/90)·`lane_compare.py` 보존. 전체 py_compile 통과. (커밋 e409b51) |
 | 2026-07-05 | P7 | launch 계층화: `online_manual.launch.py`(camera+control[joystick]+joystick+perception+recorder, 액추에이션 없음)와 `online_auto.launch.py`(+driving_node, engage 게이트·`ParameterValue(bool)`). 둘 다 `profile` 인자로 오프라인 프로파일 주입, `record_dir`·`bagfile` 리졸버. 운용 가이드(§7) 작성. 두 launch py_compile 통과. 리팩토링 P0~P7 완료. |

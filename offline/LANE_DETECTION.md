@@ -1,10 +1,11 @@
-# 차선검출 오프라인 실험 설계 문서 (lane_preview.py)
+# 차선검출 오프라인 실험 설계 문서 (perception_preview.py / perception_select.py)
 
-> **위치/성격**: `offline/`. 로컬 실험 도구이며 차량/배포 코드가 아님. 코드·문서는 저장소에 공유(추적)하되, 실행 결과물(`*.mp4`/`*.db3`)은 git-ignore.
+> **위치/성격**: `offline/`. 로컬 실험 도구이며 차량/배포 코드가 아님. 코드·문서는 저장소에 공유(추적)하되, 실행 결과물(`*.mp4`/`*.png`/`*.db3`)은 git-ignore.
 > **목적**: 녹화 클립으로 여러 검출 로직을 **모드 선택 + 파라미터 튜닝**만으로 비교하고, 대회 당일 실제 트랙에서 최적 조합을 고른다.
 > **비목표**: 이 문서/코드는 조향·throttle 등 차량 제어를 직접 수행하지 않는다(검출·상태추정까지만, 제어는 분리).
+> **파일 역할**: `perception_preview.py`(검출 적용 + 3패널 시각화) → `perception_select.py`(조합 비교 + 지각지표 랭킹 + 선택 export). 검출 로직 자체는 공유 코어 `driving_core.lane_core`가 실행(온라인 노드와 동일).
 
-관련 문서: 대회 규정 요약은 `Notice/미션 및 규정 설명 OT.pdf`, 카메라/토픽은 [D-Racer-Kit/docs/](../docs/) 참고.
+관련 문서: 전체 오프라인 파이프라인·핸드오프 구조는 [PIPELINE.md](PIPELINE.md), 제어는 [CONTROL_DESIGN.md](CONTROL_DESIGN.md). 대회 규정 요약은 `Notice/미션 및 규정 설명 OT.pdf`, 카메라/토픽은 [D-Racer-Kit/docs/](../docs/) 참고.
 
 ---
 
@@ -44,17 +45,25 @@
 각 파라미터는 `Cfg` 데이터클래스 필드명 / 기본값 기준.
 
 ### 축 A — 차선 픽셀 분리 (segmentation)
+
+**색상 필드 재설계**: 두 트랙은 **흰색 + 노랑**만 사용(orange 개념 폐기). `use_hsv/use_lab/use_orange` → **`colors` 집합**으로 통합.
+```python
+colors = ('white',) | ('yellow',) | ('white','yellow')   # G5 = 흰+노랑 융합
+white_use_lab: bool          # 밝기 보조(LAB L-channel OR)
+seg_fallback_adaptive: bool  # G6: 실패 시 adaptive threshold fallback
+```
+
 | 후보 | 구성 | 목적 | 상태 |
 |---|---|---|---|
-| A1 | HSV white | 기본 흰색 분리 | ✅ `use_hsv` |
-| A2 | LAB L-channel | 밝기 보조 | ✅ `use_lab` |
-| A3 | HSV OR LAB | recall↑ | ✅ (M2) |
-| A5 | (HSV OR LAB) AND edge(cascade) | FP↓ | ✅ `edge_validate` (M3) |
-| A6 | Adaptive threshold | 조명 편차 | ✅ `seg_fallback_adaptive` |
-| A7 | HSV fallback Adaptive | 실패 대응 | ✅ (M6) `seg_fallback_adaptive` |
-| A8 | HSV+LAB+morphology | 안정 mask | ✅ `morph_kernel` 항상 적용 |
+| A1 | HSV white | 기본 흰색 분리 | ✅ `colors=('white',)` |
+| A2 | + LAB L-channel OR | 밝기 보조 | ✅ `white_use_lab` |
+| A3 | Yellow hue | 노랑 로터리/지름길 | ✅ `colors=('yellow',)` |
+| A4 | White OR Yellow 융합 | 혼재/분기 | ✅ `colors=('white','yellow')` (G5) |
+| A5 | (color) AND edge cascade | FP↓ | ✅ `edge_validate` |
+| A6 | Adaptive fallback | 조명 편차·실패 대응 | ✅ `seg_fallback_adaptive` (G6) |
+| A7 | + morphology | 점선 틈 메움 | ✅ `morph_kernel` (G4=5) |
 
-**파라미터**: `hsv_s_max=80`(흰색=저채도), `hsv_v_min=160`(고명도), `lab_l_min=170`, `canny_lo=50`, `canny_hi=150`, `edge_dilate=2`, `morph_kernel=3`(점선 틈 메움, MORPH_CLOSE).
+**실측 파라미터(보존)**: `white_s_max=60`, `white_v_min=185`; `yellow_h_lo=18, yellow_h_hi=36, yellow_s_min=65, yellow_v_min=100`; `lab_l_min=170`, `canny_lo=50`, `canny_hi=150`, `edge_dilate=2`, `morph_kernel=3`(G4는 5). (§4 실측 근거)
 
 ### 축 B — ROI / 기하
 | 후보 | 구성 | 상태 |
@@ -66,7 +75,7 @@
 | B5 | 하단 + 사다리꼴 (기본값) | ✅ 기본 |
 | B7 | BEV/IPM | ⬜ optional, 저우선 |
 
-**파라미터**: `roi_top_frac=0.55`(상단 55% 무시), `trap_top_w=0.55`, `trap_bot_w=1.0`. CLI `--roi-top`으로 즉시 스윕.
+**실측 파라미터(보존, 2025 대시캠 히트맵)**: `roi_top_frac`=흰/안전망 **0.35**·노랑/혼재 **0.30**, `trap_top_w=0.80`, `trap_bot_w=1.0`. 기존 0.55/0.55는 곡선·로터리에서 차선을 잘라먹어 폐기. **차량 카메라에서 재보정 필요**(FOV 상이). CLI `--roi-top`으로 스윕.
 
 ### 축 C — 차선 포인트/모델 추출
 | 후보 | 구성 | 상태 |
@@ -118,17 +127,26 @@
 
 ---
 
-## 4. 실험군(프리셋) 구성
+## 4. 실험군(조건 기반 6군) — 2025 대시캠 실측 근거
 
-| 모드 | Segmentation | Geometry | Extraction | Filtering | 목적 | 우선순위 | 상태 |
-|---|---|---|---|---|---|---|---|
-| **M1 Basic** | HSV | 하단+사다리꼴 | contour+centroid | EMA | 베이스라인 | 1 | ✅ |
-| **M2 Brightness** | HSV OR LAB | 하단+사다리꼴 | contour+centroid | EMA | 흰선 recall↑ | 1 | ✅ |
-| **M3 Strict** | (HSV OR LAB) AND edge | 하단+사다리꼴 | contour+centroid | EMA | FP 억제 | 1 | ✅ |
-| M4 Heading | HSV OR LAB | 하단+사다리꼴 | centroid+Hough heading, split=prev_row | outlier+EMA | 방향 안정화 | 2 | ✅ |
-| M5 Curve | HSV OR LAB | 하단+사다리꼴 | contour+centroid+polyfit+curv, split=prev_row | median+EMA | 곡선 대응 | 2 | ✅ |
-| M6 Fallback | HSV → Adaptive | 하단+사다리꼴 | contour+centroid | hold+EMA | 조명 변화 | 3 | ✅ |
-| M7 Optional BEV | HSV | BEV/IPM | sliding window+polyfit | EMA | 정밀(옵션) | optional | ⬜ |
+기존 M(흰)/O(노랑) **알고리즘 누적** 프리셋을 폐기하고, 실제 두 트랙에서 관찰된 **조건(color × 기하 × 연속성)** 기준 6군으로 재정의한다(→ [PIPELINE.md](PIPELINE.md) §0). 각 군은 프리셋 1개가 아니라 그 조건에서 스윕할 파라미터 세트. **밴드·ROI 값은 2025 대시캠 실측으로 보존**(§아래), 2026 차량 카메라에서 재보정.
+
+| # | group | colors/seg | ROI (top/topW) | extraction | temporal | 근거 클립 |
+|---|---|---|---|---|---|---|
+| **G1** `white_line` | white (S≤60,V≥185) | 0.35 / 0.80 | split=center | EMA | 401,403 |
+| **G2** `white_curve` | white+lab (V≥175) | 0.35 / 0.80 | split=prev_row, polyfit+curv, 단일선 fallback | median+EMA | 411,413 |
+| **G3** `yellow_solid` | yellow (H18-36,S≥65,V≥100) | 0.30 / 0.80 | split=prev_row, polyfit+curv | median+EMA | 408,409,410 |
+| **G4** `yellow_dashed` | yellow | 0.30 / 0.80 | morph_kernel=5, aspect/length OFF | split=prev_row, EMA | 404,405 |
+| **G5** `white_yellow` | white+yellow 융합 | 0.30 / 0.80 | split=prev_row | EMA | 404,406 |
+| **G6** `robust_lowlight` | white+lab + adaptive fallback (느슨 S≤70,V≥160) | 0.35 / 0.80 | outlier reject | prev-hold+EMA | 407·전반 |
+
+- 두 트랙 매핑: G1/G2 = 흰 엣지(2025 얇은선·2026 넓은도로), G3/G4/G5 = 노랑 로터리·지름길, G6 = 안전망. → [[track-2026-spec]].
+- **1단계 preview**: 위 그룹 하나를 **적용만** 해서 3패널 렌더(비교·랭킹 없음). 그룹 비교는 **2단계** [perception_select](PIPELINE.md).
+
+### 실측 밴드/ROI (보존값, 2025 대시캠)
+- **흰색**: `white_s_max=60`, `white_v_min=185` (실측 S p95≈16, V p5≈207 → 기존 80/160보다 타이트, 노면 FP↓).
+- **노랑**: `yellow_h_lo=18, yellow_h_hi=36, yellow_s_min=65, yellow_v_min=100` (실측 H 22-32/S≥66/V≥112, 기존 O밴드 검증됨).
+- **ROI**: 흰/안전망 `roi_top_frac=0.35`, 노랑/혼재 `0.30`, 공통 `trap_bot_w=1.0, trap_top_w=0.80`. (히트맵: 하단 코너 강신호·중앙 하단 빈 삼각형·상단 30% 노이즈 → 세로 65~70%+넓은 상단 유리. **대시캠 FOV 기준, 차량 카메라 재보정 필요**.)
 
 ---
 
@@ -152,22 +170,30 @@ Step 6  이미지 공간이 한계일 때만 M7(BEV) 실험
 ```bash
 # 로컬 venv 사용 (레포 루트의 .venv). 최초 1회 공유 코어 설치:
 #   ../.venv/bin/pip install -e ../D-Racer-Kit/src/driving_core
-# (lane_preview/lane_compare 는 온라인 노드와 동일한 driving_core 를 import 한다)
+# (perception_preview/perception_select 는 온라인 노드와 동일한 driving_core 를 import 한다)
+# ※ 레포가 iCloud(~/Documents) 아래면 .pth가 hidden 처리되어 editable import가 깨질 수 있다.
+#   해결: site-packages 에 소스 심볼릭 링크
+#   ln -sfn "$(pwd)/D-Racer-Kit/src/driving_core/driving_core" .venv/lib/python3.13/site-packages/driving_core
 cd offline
-CLIP="../D-Racer-Kit/bagfile/test track 주행예시 클립(1).mp4"
+CLIP="Dashcam(2025 Track)/070401.mp4"
 
-# 단일 모드
-../.venv/bin/python lane_preview.py "$CLIP" --mode M2
+# ① 단일 그룹 미리보기 (3패널)
+../.venv/bin/python perception_preview.py "$CLIP" --group G1
 
-# 모드 비교 일괄
-for m in M1 M2 M3; do ../.venv/bin/python lane_preview.py "$CLIP" --mode $m; done
+# ① 그룹 일괄 미리보기
+for g in G1 G2 G5; do ../.venv/bin/python perception_preview.py "$CLIP" --group $g; done
 
-# ROI 스윕 + 곡선 피팅 오버레이
-../.venv/bin/python lane_preview.py "$CLIP" --mode M2 --roi-top 0.65 --polyfit
+# ① ROI 스윕 + 곡선 피팅 오버레이
+../.venv/bin/python perception_preview.py "$CLIP" --group G2 --roi-top 0.30 --polyfit
+
+# ② 그룹 비교(매트릭스+격자) + (선택) export
+../.venv/bin/python perception_select.py "Dashcam(2025 Track)"/0704*.mp4 --frames 3
+../.venv/bin/python perception_select.py "Dashcam(2025 Track)"/0704*.mp4 --export G5 \
+    --profile ../D-Racer-Kit/src/config/profiles/track2025.yaml   # profile [perception] write
 ```
 
-**CLI 인자**: `input`, `--mode {M1..M6}`, `--roi-top`, `--split {center,prev_frame,prev_row}`, `--heading {slope,two_point,norm_slope,hough}`, `--aspect`, `--length`, `--lane-width-tol`, `--dynamic-roi`, `--per-lane-conf`, `--median`, `--polyfit`, `--output`. (프리셋을 CLI로 덮어써 조합 실험)
-**출력**: `<클립명>__<모드>.mp4` (side-by-side 패널, git-ignore).
+**perception_preview CLI**: `input`, `--group {G1..G6}`, `--colors white,yellow`, `--roi-top`, `--trap-top`, `--split {center,prev_frame,prev_row}`, `--heading {slope,two_point,norm_slope,hough}`, `--white-s-max/--white-v-min`, `--yellow-h LO HI`, `--yellow-s-min/--yellow-v-min`, `--morph`, `--polyfit`, `--curvature`, `--median`, `--dynamic-roi`, `--per-lane-conf`, `--lab`, `--output`. (그룹 프리셋을 CLI로 덮어써 스윕)
+**출력**: `rslt/<클립명>__<그룹>.mp4`(preview), `rslt/perception_matrix.png`·`perception_grid.png`(select). 모두 git-ignore.
 
 ### 패널 해석
 ```
@@ -178,13 +204,29 @@ for m in M1 M2 M3; do ../.venv/bin/python lane_preview.py "$CLIP" --mode $m; don
 
 ---
 
-## 7. 설계 결정 / 가정
+## 7. 지각 지표 & 선택 export (perception_select.py)
+
+여러 모드를 같은 프레임에서 비교(시각)하는 데 더해, **클립 전체에서 검출 품질 지표**를 집계해 정량 랭킹한다. 이 지표들은 **컨트롤러와 무관**한 순수 지각 품질이다(제어 지표는 [CONTROL_DESIGN.md](CONTROL_DESIGN.md) §5).
+
+| 지표 | 정의 | 좋음 |
+|---|---|---|
+| **coverage(검출율)** | `conf ≥ τ` 인 프레임 비율 | 높을수록 |
+| **center bias** | `center_error` 평균 | 0에 가까울수록(대칭) |
+| **center jitter** | `center_error` std / 프레임간 |Δ| | 낮을수록(안정) |
+| **heading jitter** | heading 프레임간 변동 | 낮을수록 |
+| **L/R 균형** | `per_lane_conf` 좌/우 검출률 차 | 작을수록 |
+| **일관성** | 인접 프레임 center 급변(outlier) 빈도 | 낮을수록 |
+
+- **선택 → export**: 최적 mode + 파라미터를 profile YAML의 `perception:` 섹션에 in-place로 write(`--export <track>.yaml`). 나머지 섹션(`control:` 등)은 보존. 이 파일이 온라인 `perception_node`가 로드하는 계약(→ [PIPELINE.md](PIPELINE.md) §3).
+- 지표는 어디까지나 후보를 좁히는 1차 필터이며, **최종은 시각(3패널) 확인과 병행**한다.
+
+## 8. 설계 결정 / 가정
 
 - **가정(확인 필요)**: 실제 대회 트랙에는 **중앙 점선이 없다**(현장 확인 전 가정). 테스트 클립에는 점선이 있음.
   → 따라서 테스트 주행에서 **점선 검출 여부는 무관**하며, 종횡비/길이 필터가 점선을 제거해도 문제 없음(오히려 유익).
 - **종횡비 필터 on/off 두 버전 모두 보존**한다. 실제 트랙에 점선이 없다면 필터 on(뭉툭한 잡물 제거)이 유리하나, 만약 점선을 살려야 하는 트랙이면 off 버전을 쓴다. 프리셋/파라미터로 전환 가능하게 유지.
 
-## 8. TODO (구현 대기/예정)
+## 9. TODO (구현 대기/예정)
 
 - [x] contour **종횡비/길이 필터** (`min_aspect`/`min_length`, 기본 off) — 물체 블롭 제거 확인. §7대로 on/off 보존.
 - [x] **heading_error 옵션화** — slope(참고용, 과장) / two_point(근·원 2점) / norm_slope(무차원) / hough 4종 선택. 부호 규약: **+ = 진행방향 우측**. (robust fit은 추후)
@@ -194,7 +236,7 @@ for m in M1 M2 M3; do ../.venv/bin/python lane_preview.py "$CLIP" --mode $m; don
 - [ ] (선택) M7 BEV: 카메라 각도 확정 후 4점 캘리브레이션.
 - [ ] 검출 확정 후 → 제어 매핑(P/PID)·시간적 확인은 **별도 노드/문서**로.
 
-## 9. 대회장 운용 메모
+## 10. 대회장 운용 메모
 
 - 이 구조의 목표: 현장에서 **알고리즘을 새로 짜지 않고**, `--mode` 선택 + threshold/ROI/필터 파라미터 튜닝만으로 대응.
 - 실제 트랙은 조명·차선색·곡률·배경·카메라 각도가 이 클립과 다르므로, 위 실험 절차로 후보를 좁혀 두고 당일 최종 선택.

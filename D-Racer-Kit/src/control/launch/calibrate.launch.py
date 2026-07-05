@@ -1,0 +1,55 @@
+"""Track-test pipeline — Launch 1 (calibration & setup).
+
+1st manual run. Brings up camera + manual driving (control + joystick) + the live
+web monitor so the operator can (a) adjust camera angle/height watching the live
+feed and (b) tune steering_trim (joystick Y/B) and accel_ratio (joystick L1/R1).
+Both are calibration_mode edits and are PERSISTED to vehicle_config.yaml
+(STEER_TRIM + ACCEL_RATIO), so every later launch loads them automatically.
+
+No perception, no recorder, no autonomous actuation — setup only.
+
+    ros2 launch control calibrate.launch.py
+"""
+from pathlib import Path
+
+from launch import LaunchDescription
+from launch_ros.actions import Node
+
+
+def _find(rel, fallback):
+    for base in Path(__file__).resolve().parents:
+        cand = base / rel
+        if cand.exists():
+            return str(cand)
+    return fallback
+
+
+def generate_launch_description():
+    vehicle_config = _find(
+        'src/config/vehicle_config.yaml',
+        '/home/topst/SC2026/D-Racer-Kit/src/config/vehicle_config.yaml')
+
+    return LaunchDescription([
+        Node(
+            package='camera', executable='camera_node', name='camera_node',
+            output='screen',
+            parameters=[{'vehicle_config_file': vehicle_config}],
+        ),
+        Node(
+            package='control', executable='control_node', name='control_node',
+            output='screen',
+            parameters=[{'use_joystick_control': True,
+                         'vehicle_config_file': vehicle_config}],
+        ),
+        Node(
+            package='joystick', executable='joystick_node', name='joystick_node',
+            output='screen',
+            parameters=[{'calibration_mode': True,   # Y/B: steer trim, L1/R1: accel_ratio
+                         'vehicle_config_file': vehicle_config}],
+        ),
+        Node(
+            package='monitor', executable='monitor_node', name='monitor_node',
+            output='screen',
+            parameters=[{'vehicle_config_file': vehicle_config}],
+        ),
+    ])

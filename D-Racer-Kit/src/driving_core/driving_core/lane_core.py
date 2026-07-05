@@ -1,12 +1,13 @@
 """Pure (ROS-independent) lane-detection pipeline. Single source of truth.
 
-Composable axes A..F with mode presets M1..M6 (white) / O1..O3 (yellow tape),
-imported by BOTH the online perception node and the offline tools (offline/).
-Depends only on cv2 + numpy so it runs inside the ROS2 node and off-board.
+Composable axes A..F with condition-based groups G1..G6 (white / yellow, per the
+two-track scope; see offline/LANE_DETECTION.md §4), imported by BOTH the online
+perception node and the offline tools (offline/). Depends only on cv2 + numpy so
+it runs inside the ROS2 node and off-board.
 
 Usage:
     from driving_core.lane_core import LanePipeline, PRESETS, make_cfg
-    pipe = LanePipeline(make_cfg('M2', roi_top_frac=0.6))
+    pipe = LanePipeline(make_cfg('G5', colors=('white', 'yellow')))
     overlay_bgr, state = pipe.process(frame_bgr)   # state: dict (center_error, ...)
 
 The pipeline NEVER commands the vehicle; it only produces a lane state estimate
@@ -24,34 +25,32 @@ import numpy as np
 # ==========================================================================
 @dataclass
 class Cfg:
-    name: str = 'M1'
-    # A: segmentation
-    use_hsv: bool = True
-    use_lab: bool = False
-    fuse: str = 'or'
+    name: str = 'G1'
+    # A: segmentation — two tracks use WHITE + YELLOW only ('orange' retired).
+    # `colors` is a subset of ('white','yellow'); masks are OR-combined.
+    colors: tuple = ('white',)
+    white_use_lab: bool = False        # OR LAB L-channel for brightness robustness
     edge_validate: bool = False
     seg_fallback_adaptive: bool = False
     fallback_min_frac: float = 0.004
-    hsv_s_max: int = 80
-    hsv_v_min: int = 160
+    # white marking band (2025 dashcam measured: S p95~16, V p5~207 -> tight)
+    white_s_max: int = 60
+    white_v_min: int = 185
     lab_l_min: int = 170
-    # colored-tape lane (yellow/orange tape). HSV hue band.
-    # Tuned to the 2025 test track: measured tape hue H~22-32, S p5=80, V p5=120
-    # (was h 5-30 / s 90 / v 80, tuned for the older bag_20260703_145235 clip).
-    use_orange: bool = False
-    orange_h_lo: int = 15
-    orange_h_hi: int = 38
-    orange_s_min: int = 70
-    orange_v_min: int = 90
+    # yellow marking band (2025 dashcam measured: H 22-32, S>=66, V>=112)
+    yellow_h_lo: int = 18
+    yellow_h_hi: int = 36
+    yellow_s_min: int = 65
+    yellow_v_min: int = 100
     canny_lo: int = 50
     canny_hi: int = 150
     edge_dilate: int = 2
     morph_kernel: int = 3
     adaptive_block: int = 21
     adaptive_c: int = -5
-    # B: ROI
-    roi_top_frac: float = 0.55
-    trap_top_w: float = 0.55
+    # B: ROI (2025 dashcam heatmap: keep bottom ~65-70%, wide top)
+    roi_top_frac: float = 0.35
+    trap_top_w: float = 0.80
     trap_bot_w: float = 1.0
     dynamic_roi: bool = False
     dynamic_roi_gain: float = 1.0
@@ -79,33 +78,39 @@ class Cfg:
     lost_stop_frames: int = 8
 
 
+# Condition-based experiment groups (2025 dashcam analysis; two-track scope).
+# Bands/ROI are measured defaults (see offline/LANE_DETECTION.md §4); 2026 car
+# camera re-tunes them. Groups are specialists per observed condition.
 PRESETS = {
-    'M1': Cfg(name='M1 Basic', use_hsv=True, use_lab=False),
-    'M2': Cfg(name='M2 Brightness', use_hsv=True, use_lab=True),
-    'M3': Cfg(name='M3 Strict', use_hsv=True, use_lab=True, edge_validate=True),
-    'M4': Cfg(name='M4 Heading', use_hsv=True, use_lab=True,
-              heading_method='hough', split_ref='prev_row'),
-    'M5': Cfg(name='M5 Curve', use_hsv=True, use_lab=True,
+    # white boundary, straight / two-line (near lanes)
+    'G1': Cfg(name='G1 white_line', colors=('white',),
+              roi_top_frac=0.35, trap_top_w=0.80, split_ref='center'),
+    # white boundary, curve / single-line (lane_width fallback + polyfit)
+    'G2': Cfg(name='G2 white_curve', colors=('white',), white_use_lab=True,
+              white_v_min=175, roi_top_frac=0.35, trap_top_w=0.80,
+              split_ref='prev_row', do_polyfit=True, curvature=True,
+              use_median=True, heading_method='two_point'),
+    # yellow solid, roundabout curve
+    'G3': Cfg(name='G3 yellow_solid', colors=('yellow',),
+              roi_top_frac=0.30, trap_top_w=0.80, split_ref='prev_row',
               do_polyfit=True, curvature=True, use_median=True,
-              heading_method='two_point', split_ref='prev_row'),
-    'M6': Cfg(name='M6 Fallback', use_hsv=True, use_lab=False,
-              seg_fallback_adaptive=True),
-    # Yellow/orange-tape tracks (shortcut + roundabout). White masks fail;
-    # segment the tape hue band only (band defaults tuned for the 2025 test track).
-    'O1': Cfg(name='O1 Orange', use_hsv=False, use_lab=False, use_orange=True,
-              split_ref='prev_row', roi_top_frac=0.45, min_contour_area=8),
-    'O2': Cfg(name='O2 OrangeCurve', use_hsv=False, use_lab=False, use_orange=True,
-              split_ref='prev_row', roi_top_frac=0.45, min_contour_area=8,
-              do_polyfit=True, curvature=True, use_median=True,
-              heading_method='two_point'),
-    'O3': Cfg(name='O3 OrangeStrict', use_hsv=False, use_lab=False, use_orange=True,
-              split_ref='prev_row', roi_top_frac=0.45, min_contour_area=8,
-              min_aspect=1.8, min_length=12, morph_kernel=5),
+              heading_method='two_point', min_contour_area=8),
+    # yellow dashed guide line (bridge gaps; do NOT aspect/length-filter dashes)
+    'G4': Cfg(name='G4 yellow_dashed', colors=('yellow',),
+              roi_top_frac=0.30, trap_top_w=0.80, split_ref='prev_row',
+              morph_kernel=5, min_contour_area=8),
+    # white + yellow coexisting (junction / roundabout entry) -> fused mask
+    'G5': Cfg(name='G5 white_yellow', colors=('white', 'yellow'),
+              roi_top_frac=0.30, trap_top_w=0.80, split_ref='prev_row'),
+    # low-contrast / blur safety net (LAB assist + adaptive fallback + hold)
+    'G6': Cfg(name='G6 robust_lowlight', colors=('white',), white_use_lab=True,
+              white_s_max=70, white_v_min=160, seg_fallback_adaptive=True,
+              roi_top_frac=0.35, trap_top_w=0.80),
 }
 
 
-def make_cfg(mode='M1', **overrides):
-    base = PRESETS.get(mode, PRESETS['M1'])
+def make_cfg(mode='G1', **overrides):
+    base = PRESETS.get(mode, PRESETS['G1'])
     # drop None overrides so callers can pass through unset ROS params
     ov = {k: v for k, v in overrides.items() if v is not None}
     return replace(base, **ov) if ov else base
@@ -114,9 +119,9 @@ def make_cfg(mode='M1', **overrides):
 # ==========================================================================
 # A: segmentation
 # ==========================================================================
-def _seg_hsv(bgr, c):
+def _seg_white(bgr, c):
     _, s, v = cv2.split(cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV))
-    return ((s <= c.hsv_s_max) & (v >= c.hsv_v_min)).astype(np.uint8) * 255
+    return ((s <= c.white_s_max) & (v >= c.white_v_min)).astype(np.uint8) * 255
 
 
 def _seg_lab(bgr, c):
@@ -124,10 +129,10 @@ def _seg_lab(bgr, c):
     return (lab[:, :, 0] >= c.lab_l_min).astype(np.uint8) * 255
 
 
-def _seg_orange(bgr, c):
+def _seg_yellow(bgr, c):
     h, s, v = cv2.split(cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV))
-    return ((h >= c.orange_h_lo) & (h <= c.orange_h_hi)
-            & (s >= c.orange_s_min) & (v >= c.orange_v_min)).astype(np.uint8) * 255
+    return ((h >= c.yellow_h_lo) & (h <= c.yellow_h_hi)
+            & (s >= c.yellow_s_min) & (v >= c.yellow_v_min)).astype(np.uint8) * 255
 
 
 def _seg_edges(bgr, c):
@@ -143,17 +148,18 @@ def _seg_adaptive(bgr, c):
 
 def _segmentation(bgr, c):
     masks = []
-    if c.use_hsv:
-        masks.append(_seg_hsv(bgr, c))
-    if c.use_lab:
-        masks.append(_seg_lab(bgr, c))
-    if c.use_orange:
-        masks.append(_seg_orange(bgr, c))
+    if 'white' in c.colors:
+        wm = _seg_white(bgr, c)
+        if c.white_use_lab:
+            wm = cv2.bitwise_or(wm, _seg_lab(bgr, c))
+        masks.append(wm)
+    if 'yellow' in c.colors:
+        masks.append(_seg_yellow(bgr, c))
     if not masks:
-        masks.append(_seg_hsv(bgr, c))
+        masks.append(_seg_white(bgr, c))
     mask = masks[0]
-    for m in masks[1:]:
-        mask = cv2.bitwise_or(mask, m) if c.fuse == 'or' else cv2.bitwise_and(mask, m)
+    for m in masks[1:]:      # multiple colors -> OR (white OR yellow)
+        mask = cv2.bitwise_or(mask, m)
     if c.edge_validate:
         edges = cv2.dilate(_seg_edges(bgr, c), np.ones((3, 3), np.uint8),
                            iterations=max(1, c.edge_dilate))

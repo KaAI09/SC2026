@@ -10,7 +10,7 @@ Topics:
   pub : /lane/state               (lane_msgs/LaneState)
   pub : /lane/debug/compressed    (sensor_msgs/CompressedImage)  # overlay
 Params:
-  mode (M1..M6 / O1..O3) + per-axis overrides, debug_scale, jpeg_quality,
+  mode (G1..G6 condition groups) + per-axis overrides, debug_scale, jpeg_quality,
   log_hz, publish_debug.
 """
 import math
@@ -41,7 +41,7 @@ class PerceptionNode(Node):
         self.declare_parameter('debug_topic', '/lane/debug/compressed')
         # offline-selected profile (authoritative when set); else use mode+overrides
         self.declare_parameter('profile', '')
-        self.declare_parameter('mode', 'M2')
+        self.declare_parameter('mode', 'G1')
         self.declare_parameter('jpeg_quality', 80)
         self.declare_parameter('debug_scale', 2.0)
         self.declare_parameter('log_hz', 2.0)
@@ -61,11 +61,12 @@ class PerceptionNode(Node):
         self.declare_parameter('lane_width_default', -1.0)
         self.declare_parameter('min_contour_area', -1)
         self.declare_parameter('morph_kernel', -1)
-        self.declare_parameter('use_orange', False)
-        self.declare_parameter('orange_h_lo', -1)
-        self.declare_parameter('orange_h_hi', -1)
-        self.declare_parameter('orange_s_min', -1)
-        self.declare_parameter('orange_v_min', -1)
+        # color set: comma-separated subset of white,yellow ('' -> preset default)
+        self.declare_parameter('colors', '')
+        self.declare_parameter('yellow_h_lo', -1)
+        self.declare_parameter('yellow_h_hi', -1)
+        self.declare_parameter('yellow_s_min', -1)
+        self.declare_parameter('yellow_v_min', -1)
 
         gp = self.get_parameter
         subscribe_topic = str(gp('subscribe_topic').value)
@@ -106,16 +107,17 @@ class PerceptionNode(Node):
             overrides['min_contour_area'] = int(gp('min_contour_area').value)
         if int(gp('morph_kernel').value) >= 0:
             overrides['morph_kernel'] = int(gp('morph_kernel').value)
-        if bool(gp('use_orange').value):
-            overrides['use_orange'] = True
-        if int(gp('orange_h_lo').value) >= 0:
-            overrides['orange_h_lo'] = int(gp('orange_h_lo').value)
-        if int(gp('orange_h_hi').value) >= 0:
-            overrides['orange_h_hi'] = int(gp('orange_h_hi').value)
-        if int(gp('orange_s_min').value) >= 0:
-            overrides['orange_s_min'] = int(gp('orange_s_min').value)
-        if int(gp('orange_v_min').value) >= 0:
-            overrides['orange_v_min'] = int(gp('orange_v_min').value)
+        colors_p = str(gp('colors').value).strip()
+        if colors_p:
+            overrides['colors'] = tuple(x.strip() for x in colors_p.split(',') if x.strip())
+        if int(gp('yellow_h_lo').value) >= 0:
+            overrides['yellow_h_lo'] = int(gp('yellow_h_lo').value)
+        if int(gp('yellow_h_hi').value) >= 0:
+            overrides['yellow_h_hi'] = int(gp('yellow_h_hi').value)
+        if int(gp('yellow_s_min').value) >= 0:
+            overrides['yellow_s_min'] = int(gp('yellow_s_min').value)
+        if int(gp('yellow_v_min').value) >= 0:
+            overrides['yellow_v_min'] = int(gp('yellow_v_min').value)
 
         # A profile (offline-selected) is authoritative: it replaces mode +
         # per-axis overrides so the car runs exactly what offline picked.

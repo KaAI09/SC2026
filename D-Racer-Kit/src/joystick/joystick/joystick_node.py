@@ -160,13 +160,18 @@ class JoystickNode(Node):
             return
 
         saved_trim = calibration_data.get('STEER_TRIM')
-        if saved_trim is None:
-            return
+        if saved_trim is not None:
+            self.steering_trim = float(saved_trim)
+            self.set_parameters([
+                Parameter('steering_trim', Parameter.Type.DOUBLE, self.steering_trim),
+            ])
 
-        self.steering_trim = float(saved_trim)
-        self.set_parameters([
-            Parameter('steering_trim', Parameter.Type.DOUBLE, self.steering_trim),
-        ])
+        saved_accel = calibration_data.get('ACCEL_RATIO')
+        if saved_accel is not None:
+            self.accel_ratio = self.clamp(
+                float(saved_accel), self.accel_ratio_min, self.accel_ratio_max)
+            self.get_logger().info(
+                f'loaded ACCEL_RATIO={self.accel_ratio:.3f} from vehicle config')
 
     def save_calibration(self):
         calibration_dir = os.path.dirname(self.vehicle_config_file)
@@ -184,6 +189,7 @@ class JoystickNode(Node):
                 )
 
         config_data['STEER_TRIM'] = float(self.steering_trim)
+        config_data['ACCEL_RATIO'] = float(self.accel_ratio)
 
         with open(self.vehicle_config_file, 'w', encoding='utf-8') as calibration_stream:
             yaml.safe_dump(config_data, calibration_stream, sort_keys=False)
@@ -220,6 +226,7 @@ class JoystickNode(Node):
     def update_accel_ratio_from_buttons(self, data):
         l1_pressed = bool(data.button_L1)
         r1_pressed = bool(data.button_R1)
+        accel_changed = False
 
         if l1_pressed and not self._prev_l1_pressed:
             self.accel_ratio = self.clamp(
@@ -227,6 +234,7 @@ class JoystickNode(Node):
                 self.accel_ratio_min,
                 self.accel_ratio_max,
             )
+            accel_changed = True
             self.get_logger().info(f'accel_ratio decreased to {self.accel_ratio:.3f}')
 
         if r1_pressed and not self._prev_r1_pressed:
@@ -235,7 +243,14 @@ class JoystickNode(Node):
                 self.accel_ratio_min,
                 self.accel_ratio_max,
             )
+            accel_changed = True
             self.get_logger().info(f'accel_ratio increased to {self.accel_ratio:.3f}')
+
+        if accel_changed:                       # persist like steering_trim
+            try:
+                self.save_calibration()
+            except Exception as exc:
+                self.get_logger().error(f'Failed to save accel_ratio calibration: {exc}')
 
         self._prev_l1_pressed = l1_pressed
         self._prev_r1_pressed = r1_pressed
