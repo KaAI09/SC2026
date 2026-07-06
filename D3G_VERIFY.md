@@ -19,7 +19,7 @@
 export WS=~/SC2026/D-Racer-Kit           # 실제 경로로 조정
 cd "$WS"
 git fetch origin && git checkout kos/track-test && git pull origin kos/track-test
-git log --oneline -3                     # 68b4d6c(P8) 계열인지 확인
+git log --oneline -3                     # 9ccbf9b(monitor 경량화·legacy launch 정리) 이상인지 확인
 
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install
@@ -50,7 +50,10 @@ ros2 topic echo /battery_status --once    # 배터리 상태
 ros2 launch control calibrate.launch.py
 ```
 확인:
-- 웹 모니터 접속(monitor_node): 브라우저에서 카메라 실시간 피드 → **카메라 각도/높이 물리 조절**.
+- `ros2 node list` → **camera / control / joystick / monitor / battery** 5개 노드 (battery_node 신규 포함).
+- 웹 모니터 접속(monitor_node, `http://<D3-G_IP>:5000`): 브라우저에서 카메라 실시간 피드 → **카메라 각도/높이 물리 조절**.
+  - **경량 모니터 회귀 확인**: 웹에 **카메라 + 배터리 + 저장공간 3패널만** 표시(제어/녹화/ROS그래프/OpenCV디버그 패널 제거됨). 지연이 줄었는지 체감 확인.
+  - **배터리 패널 동작**: battery_node 포함으로 배터리 값이 WAITING이 아닌 실제 값 → `ros2 topic echo /battery_status --once`.
 - 조이스틱 버튼 동작 (control_node 로그 관찰):
   - **Y / B** → `steering_trim` 감소/증가 (로그 `steering_trim updated to ...`)
   - **L1 / R1** → `accel_ratio` 감소/증가 (로그 `accel_ratio decreased/increased to ...`)
