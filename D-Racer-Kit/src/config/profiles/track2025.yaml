@@ -2,11 +2,11 @@
 #
 # Single offline -> online contract: the perception mode/params and controller/
 # gains the offline evaluation selected for this track. offline/control_select.py
-# writes [control]. Perception is CONFIRMED as the 7-label BEV method
-# (offline/lane7_probe.py); online BEV integration is DEFERRED until after on-car
-# testing (a dedicated BEV core + camera-calibration code will be added), so the
-# [perception] section below stays the front-view baseline (driving_core.lane_core)
-# and is maintained by hand (perception_select.py was removed).
+# writes [control]. Perception online now runs the 7-label logic ported from
+# offline/lane7_probe.py into driving_core.lane_core (detect -> sliding-window
+# multi-lane -> 7-label -> ego corridor centerline), FRONT-VIEW: the probe's
+# uncalibrated ROI-trapezoid warp is dropped. A camera-calibrated BEV is a later
+# stage (warp masks before the sliding window). [perception] keys are hand-tuned.
 # perception_node and driving_node load this one file via the `profile` parameter
 # instead of many separate ROS params.
 #
@@ -15,7 +15,7 @@
 name: track2025
 
 perception:
-  mode: G5                 # white+yellow fused (front-view baseline; BEV integration deferred to post-track test)
+  mode: G5                 # white+yellow fused (lane7 front-view; calibrated BEV deferred)
   colors: [white, yellow]
   roi_top_frac: 0.30       # 2025 dashcam heatmap (yellow/roundabout keeps more height)
   trap_top_w: 0.80
