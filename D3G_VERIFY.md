@@ -18,8 +18,8 @@
 ```bash
 export WS=~/SC2026/D-Racer-Kit           # 실제 경로로 조정
 cd "$WS"
-git fetch origin && git checkout kos/track-test && git pull origin kos/track-test
-git log --oneline -3                     # 9ccbf9b(monitor 경량화·legacy launch 정리) 이상인지 확인
+git fetch origin && git checkout kos/track-test2 && git pull origin kos/track-test2
+git log --oneline -3                     # 0c03eac(perception 7-label BEV 확정·탐색도구 제거) 이상인지 확인
 
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install

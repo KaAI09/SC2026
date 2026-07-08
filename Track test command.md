@@ -8,11 +8,34 @@
 
 ---
 
+## 0. 실차 테스트 준비 체크리스트 (pre-flight)
+
+**동기화·빌드**
+- [ ] D3-G가 **`kos/track-test2`** 로 pull + `colcon build --symlink-install` + `source install/setup.bash` (A-2, A-3)
+- [ ] `git log --oneline -1` 이 원격 tip(`0c03eac` 이상)과 일치
+- [ ] profile 경로 확인: `ls $WS/src/config/profiles/track2025.yaml`
+
+**하드웨어·안전**
+- [ ] 배터리 충전 상태 확인(웹 모니터 `:5000` 또는 `ros2 topic echo /battery_status`)
+- [ ] 조이스틱 페어링 + **X(E-stop) 즉시 정지 동작 확인** (수동 주행으로 먼저 검증)
+- [ ] 즉시 정지 가능한 위치·여유 공간 확보, 차량 붙잡을 사람 대기
+
+**단계 순서(무부하 우선)**
+- [ ] Step 1-2 `calibrate` — 카메라 각도/높이 + STEER_TRIM/ACCEL_RATIO 저장
+- [ ] Step 7 `online_manual` — **바퀴 들고** `/lane/state` 정상(center_error/confidence) 확인, 오버레이 육안 확인
+- [ ] Step 11 `online_auto` — `engage=false`로 기동 → `/control` 방향 확인 → **바퀴 들고 `engage true`로 조향 방향 검증** → 반대면 `profile control.steer_sign=-1` → 저속 트랙
+
+**주의**
+- online_auto는 `engage:=true` 일 때만 `/control` 발행. 노드 죽으면 액추에이터 watchdog(0.5s)이 중립 정지.
+- 저신뢰/차선 상실(state LOST/HOLD·conf<gate) 시 driving_node가 스로틀 0.
+
+---
+
 ## A. 환경 준비
 
 ### A-1. 🖥 로컬 venv (최초 1회)
 ```bash
-cd <레포 루트>                      # 예: ~/Documents/workspace/SC2026(refactoring)
+cd <레포 루트>                      # 예: ~/workspace/SC2026
 .venv/bin/pip install -e D-Racer-Kit/src/driving_core
 # iCloud(~/Documents) 아래면 .pth가 hidden 처리돼 editable import가 깨질 수 있음 → 심볼릭 링크:
 ln -sfn "$(pwd)/D-Racer-Kit/src/driving_core/driving_core" \
@@ -21,14 +44,15 @@ ln -sfn "$(pwd)/D-Racer-Kit/src/driving_core/driving_core" \
 ```
 
 ### A-2. 🚗 D3-G — 로컬 전부 무시 + 미추적 삭제 + 원격으로 동기화
+> 실차 테스트 활성 브랜치는 **`kos/track-test2`** (perception 7-label BEV 확정 + 최신 문서). `kos/track-test`는 보존용 이전 스냅샷.
 ```bash
 export WS=~/SC2026/D-Racer-Kit          # 실제 경로로 조정
 cd "$WS"
 git fetch origin
-git checkout kos/track-test
-git reset --hard origin/kos/track-test   # ① 추적 파일의 로컬 수정 전부 폐기
+git checkout kos/track-test2
+git reset --hard origin/kos/track-test2  # ① 추적 파일의 로컬 수정 전부 폐기
 git clean -fdx                           # ② 미추적 파일/폴더 전부 삭제 (build/install/bagfile 포함)
-git log --oneline -3                      # 원격 HEAD와 일치 확인
+git log --oneline -3                      # 원격 HEAD(0c03eac 이상)와 일치 확인
 ```
 > ⚠ **되돌릴 수 없음**:
 > - `reset --hard` → `vehicle_config.yaml`이 repo 버전으로 복원 → **STEER_TRIM/ACCEL_RATIO 초기화** → **Launch 1 재캘리브레이션 필요**.
@@ -62,8 +86,8 @@ ros2 launch control calibrate.launch.py
 
 ### Step 3 · 🚗 record_manual — 원본 카메라 영상 저장 (Launch 2)
 ```bash
-ros2 launch control record_manual.launch.py
-# 저장 위치: record_dir:=$HOME/bagfile (기본)
+ros2 launch control record_manual.launch.py record_dir:=$HOME/bagfile
+# record_dir 미지정 시 기본값은 repo의 D-Racer-Kit/bagfile/ 로 잡힐 수 있어 명시 권장
 ```
 - 조이스틱 **START**로 녹화 시작/정지 (원본 `/camera/image/compressed`).
 ```bash
@@ -82,7 +106,7 @@ cd offline
 ### Step 7 · 🚗 online_manual — 지각 + 수동 + 기록 (Launch 3)
 ```bash
 ros2 launch control online_manual.launch.py \
-    profile:=$WS/src/config/profiles/track2025.yaml
+    profile:=$WS/src/config/profiles/track2025.yaml record_dir:=$HOME/bagfile
 ```
 확인(새 터미널):
 ```bash
@@ -115,14 +139,14 @@ cd offline
 
 ### Step 10 · 🚗 profile 적용 — 온라인 노드가 로드
 ```bash
-cd "$WS" && git pull origin kos/track-test && colcon build --symlink-install && source install/setup.bash
+cd "$WS" && git pull origin kos/track-test2 && colcon build --symlink-install && source install/setup.bash
 # perception_node/driving_node가 profile:= 인자로 로드 (Step 7/11 런치에서 지정)
 ```
 
 ### Step 11 · 🚗 online_auto — 차선검출 + 자율주행 + 기록 (⚠ 액추에이션)
 ```bash
 ros2 launch control online_auto.launch.py \
-    profile:=$WS/src/config/profiles/track2025.yaml     # engage=false로 시작
+    profile:=$WS/src/config/profiles/track2025.yaml record_dir:=$HOME/bagfile   # engage=false로 시작
 ```
 안전 절차(새 터미널):
 ```bash
@@ -168,7 +192,7 @@ scp topst@<D3-G_IP>:~/bagfile/'raw_*.mp4'          ./offline/rslt/
 
 # 완성 profile 로컬 → D3-G                [git 경유]
 #   로컬: git add config/profiles/<track>.yaml && git commit && git push
-#   D3-G: git pull origin kos/track-test
+#   D3-G: git pull origin kos/track-test2
 ```
 > profile YAML은 git 추적 대상 → git으로 전달. 녹화(mp4/csv)는 미추적 → scp로 전달.
 
