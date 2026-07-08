@@ -424,3 +424,57 @@ class LanePipeline:
         for i, t in enumerate(txt):
             cv2.putText(img, t, (2, 10 + i * 10), cv2.FONT_HERSHEY_SIMPLEX, 0.30, col, 1)
         return img
+
+
+def render_panels(bgr, dbg, cfg):
+    """온라인 디버그용 다패널(3패널) 합성: [ 입력+ROI+split | mask | 검출+상태 ].
+    `LanePipeline.process(debug=True)`의 dbg 중간산물만 사용(파이프라인 재구현 없음).
+    perception_node가 이 합성 이미지를 /lane/debug/compressed 로 발행 → recorder가 저장.
+    (오프라인 _common.three_panel과 동일 스타일; ROS 노드가 import 가능하도록 코어에 둠.)
+    """
+    h, w = bgr.shape[:2]
+    mask, det, st = dbg['mask'], dbg['det'], dbg['st']
+    y0, trap, ema, fstate, used_fb = (dbg['y0'], dbg['trap'], dbg['ema'],
+                                      dbg['fstate'], dbg['used_fb'])
+
+    def _label(img, text):
+        cv2.rectangle(img, (0, 0), (img.shape[1], 14), (0, 0, 0), -1)
+        cv2.putText(img, text, (3, 10), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (255, 255, 255), 1)
+        return img
+
+    def _f(v, s=''):
+        return f'{v:+.2f}{s}' if v is not None else 'n/a'
+
+    # P1: 입력 + ROI 사다리꼴 + split 기준선
+    p1 = bgr.copy()
+    cv2.polylines(p1, [trap], True, (0, 200, 255), 1)
+    cv2.line(p1, (int(det['seed']), y0), (int(det['seed']), h - 1), (200, 120, 0), 1)
+    _label(p1, f'1 input+ROI  {cfg.name}')
+
+    # P2: segmentation mask
+    p2 = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+    _label(p2, '2 mask' + (' [adaptive fb]' if used_fb else ''))
+
+    # P3: 행 중심점 + polyfit + ema + 상태 텍스트
+    p3 = bgr.copy()
+    for y, xc in zip(det['rows'], det['centers']):
+        cv2.circle(p3, (int(xc), int(y)), 1, (0, 255, 0), -1)
+    if st['poly'] is not None and cfg.do_polyfit:
+        ys = np.arange(y0, h)
+        xs = np.polyval(st['poly'], ys)
+        pts = np.array([[int(x), int(y)] for x, y in zip(xs, ys) if 0 <= x < w], np.int32)
+        if len(pts) > 1:
+            cv2.polylines(p3, [pts], False, (255, 0, 255), 1)
+    if ema is not None:
+        ex = int(w / 2 + ema * (w / 2))
+        cv2.line(p3, (ex, y0), (ex, h - 1), (0, 0, 255), 2)
+    _label(p3, '3 detection')
+    lines = [f"cen {_f(st['center_error'])} ema {_f(ema)}",
+             f"hd {_f(st['heading'])}[{st['heading_label']}]",
+             f"conf {det['conf']:.2f} L/R {det['left_conf']:.2f}/{det['right_conf']:.2f}",
+             f"state {fstate}" + (' FB' if used_fb else '')]
+    col = (0, 255, 0) if 'OK' in fstate else (0, 200, 255)
+    for i, t in enumerate(lines):
+        cv2.putText(p3, t, (3, 26 + i * 12), cv2.FONT_HERSHEY_SIMPLEX, 0.32, col, 1)
+
+    return np.hstack([p1, p2, p3])

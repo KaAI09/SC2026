@@ -58,7 +58,7 @@
 **Step 7** — 지각 검출(예측값+결과영상) + 수동주행(주행로그) + 주행영상 저장하며 2번째 수동 주행
 - 위치: 차량 · **Launch 3**
 - 기본 세팅: 주행 파라미터 초기값 분석(steering/throttle min·max·scale·bias)
-- 저장: `recorder_node` → `drive_<ts>.mp4 + .csv`(LaneState + 수동 command 동기) ✅
+- 저장: `recorder_node` → `drive_<ts>.mp4`(**다패널 디버그 영상** 입력+ROI\|mask\|검출, `/lane/debug/compressed`) + `.csv`(LaneState + 수동 command 동기) ✅. 현재 front-view 3패널, BEV 6패널은 실차 후 통합 시.
 - → **Launch 3** ≈ 기존 `online_manual.launch.py` (`camera + control + joystick + perception + recorder`) 🔧
 
 ### 💻 오프라인 — 제어 선정

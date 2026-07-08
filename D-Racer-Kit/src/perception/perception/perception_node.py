@@ -8,7 +8,7 @@ overlay image for monitoring. It NEVER commands the vehicle and does NOT record
 Topics:
   sub : /camera/image/compressed  (sensor_msgs/CompressedImage)
   pub : /lane/state               (lane_msgs/LaneState)
-  pub : /lane/debug/compressed    (sensor_msgs/CompressedImage)  # overlay
+  pub : /lane/debug/compressed    (sensor_msgs/CompressedImage)  # 다패널 디버그(입력+ROI|mask|검출)
 Params:
   mode (G1..G6 condition groups) + per-axis overrides, debug_scale, jpeg_quality,
   log_hz, publish_debug.
@@ -24,7 +24,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from sensor_msgs.msg import CompressedImage
 from lane_msgs.msg import LaneState
 
-from driving_core.lane_core import LanePipeline, make_cfg
+from driving_core.lane_core import LanePipeline, make_cfg, render_panels
 from driving_core.profile import load_profile, section
 
 
@@ -155,10 +155,14 @@ class PerceptionNode(Node):
             self.get_logger().warning('Failed to decode compressed image')
             return
 
-        overlay, state = self.pipeline.process(frame)
-        self._publish_state(state, msg.header.stamp)
         if self.publish_debug:
-            self._publish_debug(overlay, msg.header.stamp)
+            # 다패널(입력+ROI | mask | 검출+상태) 합성 발행 → recorder가 이 영상을 저장
+            _, state, dbg = self.pipeline.process(frame, debug=True)
+            self._publish_state(state, msg.header.stamp)
+            self._publish_debug(render_panels(frame, dbg, self.cfg), msg.header.stamp)
+        else:
+            _, state = self.pipeline.process(frame)
+            self._publish_state(state, msg.header.stamp)
         self._maybe_log(state)
 
     def _publish_state(self, s, stamp):

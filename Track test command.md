@@ -114,7 +114,8 @@ ros2 topic hz   /lane/state
 ros2 topic echo /lane/state --once          # center_error/ema/heading/confidence
 # 오버레이 라이브 뷰(선택): ros2 run monitor monitor_node --ros-args -p image_topic:=/lane/debug/compressed
 ```
-- **START** 녹화 → `drive_*.mp4 + .csv`(LaneState + 수동 command 동기):
+- **START** 녹화 → `drive_*.mp4`(**다패널 디버그 영상**: 입력+ROI | mask | 검출+상태) + `.csv`(LaneState + 수동 command 동기). recorder가 `/lane/debug/compressed`(perception 다패널)를 저장 — 원본 카메라가 아님.
+  > 현재는 **front-view 3패널**. BEV 6패널은 실차 후 BEV 통합 시 적용.
   ```bash
   ls -lt $HOME/bagfile/drive_*.mp4 $HOME/bagfile/drive_*.csv | head
   ```
@@ -176,7 +177,7 @@ ros2 param set /driving_node engage false      # 정지 (또는 조이스틱 X)
 |---|---|
 | `/camera/image/compressed` | 원본 카메라 |
 | `/lane/state` | 지각 상태(center_error/ema/heading/confidence) |
-| `/lane/debug/compressed` | 검출 오버레이 |
+| `/lane/debug/compressed` | 다패널 디버그(입력+ROI\|mask\|검출) — recorder가 저장 |
 | `/control` | 제어 명령(throttle/steering) |
 | `/joystick` | 조이스틱 입력 |
 | `/battery_status` | 배터리 |
