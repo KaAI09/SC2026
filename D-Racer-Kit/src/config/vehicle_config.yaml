@@ -1,4 +1,3 @@
-# Camera configuration
 USB_CAM: true
 MIPI_CAM: false
 USB_CAM_DEVICE: /dev/video1
@@ -6,11 +5,7 @@ IMAGE_WIDTH: 320
 IMAGE_HEIGHT: 160
 ROI_TOP: 50
 ROI_LEFT: 0
-
-# Vehicle control parameters
-STEER_TRIM: 0.10000000000000003
-
-# Monitor web dashboard (camera + battery + storage only)
+STEER_TRIM: 0.30000000000000004
 WEB_HOST: 0.0.0.0
 WEB_PORT: 5000
 BATTERY_TOPIC: /battery_status
@@ -18,3 +13,4 @@ IMAGE_TOPIC: /camera/image/compressed
 STORAGE_PATH: /
 IMAGE_DISPLAY_WIDTH: 640
 IMAGE_DISPLAY_HEIGHT: 480
+ACCEL_RATIO: 0.18999999999999997

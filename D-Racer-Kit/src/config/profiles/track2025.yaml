@@ -32,6 +32,6 @@ control:
   steer_max: 0.8
   steer_sign: 1.0
   slew_rate: 0.15
-  throttle_base: 0.13
-  throttle_min: 0.0
+  throttle_base: 0.20
+  throttle_min: 0.18
   conf_gate: 0.4
