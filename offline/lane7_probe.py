@@ -37,8 +37,8 @@ class Cfg:
     y_s_min: int = 55
     y_v_min: int = 90
     # ROI = BEV 소스 사다리꼴
-    roi_top: float = 0.20
-    trap_top: float = 0.75
+    roi_top: float = 0.25
+    trap_top: float = 0.80
     trap_bot: float = 1.0
     # 검출 후처리
     morph_v: int = 5             # 세로 close 커널 (점선 잇기)

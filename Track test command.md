@@ -70,32 +70,14 @@ ros2 launch control record_manual.launch.py
 ls -lt $HOME/bagfile/raw_*.mp4 $HOME/bagfile/raw_*.csv | head
 ```
 
-### Step 4 · 🖥 track_analyze — 트랙 컨디션 파라미터 산출
+### Step 4-6 · 🖥 perception — 7-label BEV 확정 (`lane7_probe.py`)
+> **확정 (2026-07-08)**: 차선 검출·인지·지각은 **7-label BEV 방식 `offline/lane7_probe.py`** 로 확정.
+> 기존 front-view 탐색 도구 `track_analyze.py`·`perception_preview.py`·`perception_select.py`는 **제거됨**.
+> **온라인 BEV 통합은 실차 테스트 후로 연기**(별도 BEV 코어 + 카메라 캘리브레이션 신설 예정) → 지금 profile `[perception]`은 front-view baseline 유지, 자동 export 없음.
 ```bash
 cd offline
-../.venv/bin/python track_analyze.py <raw영상들>.mp4 --frames 8
-# 예: ../.venv/bin/python track_analyze.py "Dashcam(2025 Track)"/0704*.mp4 --frames 8
+../.venv/bin/python lane7_probe.py <영상>.mp4     # 7-label BEV 검출·인지 + 6패널 시각화(독립)
 ```
-- 출력: 제안 밴드/ROI/lane_width + `rslt/track_analyze_heat.png`, `rslt/track_analyze_masks.png`.
-- 이 값으로 필요 시 `config/profiles/<track>.yaml` [perception] 시드 조정.
-
-### Step 5 · 🖥 perception_preview — 그룹 하나 적용 + 3패널
-```bash
-cd offline
-../.venv/bin/python perception_preview.py <영상>.mp4 --group G5
-for g in G1 G2 G5; do ../.venv/bin/python perception_preview.py <영상>.mp4 --group $g; done
-# override 예: --group G2 --roi-top 0.30 --polyfit --colors white,yellow
-```
-
-### Step 6 · 🖥 perception_select — 그룹 비교 + (선택)export
-```bash
-cd offline
-../.venv/bin/python perception_select.py <영상들>.mp4 --frames 3
-# 선정 후 profile [perception]에 write:
-../.venv/bin/python perception_select.py <영상들>.mp4 --export G5 \
-    --profile ../D-Racer-Kit/src/config/profiles/track2025.yaml
-```
-- 출력: 콘솔 복합점수 매트릭스 + `rslt/perception_matrix.png`, `rslt/perception_grid.png`.
 
 ### Step 7 · 🚗 online_manual — 지각 + 수동 + 기록 (Launch 3)
 ```bash
@@ -194,8 +176,8 @@ scp topst@<D3-G_IP>:~/bagfile/'raw_*.mp4'          ./offline/rslt/
 
 ## 요약 흐름
 ```
-🚗 calibrate(1-2) → 🚗 record_manual(3) → 🖥 track_analyze(4)
-   → 🖥 preview(5) → 🖥 select(6) ═▶ profile[perception]
+🚗 calibrate(1-2) → 🚗 record_manual(3)
+   → 🖥 lane7_probe(4-6, 7-label BEV 확정; profile[perception]은 front-view baseline 유지, BEV 통합은 실차 후)
 🚗 online_manual(7) → 🖥 control_predict(8) → 🖥 control_select(9) ═▶ profile[control]
 🚗 (pull+build,10) → 🚗 online_auto engage(11) → 🖥/🚗 보정(12, 보류)
 ```

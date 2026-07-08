@@ -2,8 +2,10 @@
 profile writing. Kept thin — all detection/control LOGIC lives in driving_core;
 here we only orchestrate, visualize, score, and hand off.
 
-Used by perception_preview / perception_select (and later control_predict /
-control_select). Rendering reads the SAME `dbg` intermediates that
+Used by the control tools (control_predict / control_select). The perception
+exploration tools (perception_preview / perception_select) were removed once
+perception was confirmed as the 7-label BEV method (offline/lane7_probe.py, which
+runs standalone). Rendering reads the SAME `dbg` intermediates that
 LanePipeline.process(debug=True) returns, so panels never re-implement the pipeline.
 """
 import csv
@@ -201,7 +203,7 @@ def write_profile_section(path, key, data):
     prof = read_profile(path)
     prof[key] = data
     header = (f'# Driving profile: {prof.get("name", clip_name(path))}\n'
-              f'# offline -> online contract (perception_select / control_select).\n'
+              f'# offline -> online contract (control_select writes [control]).\n'
               f'# Keys map 1:1 to driving_core Cfg (perception) / CtrlCfg (control).\n')
     os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:

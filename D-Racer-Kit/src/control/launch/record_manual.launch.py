@@ -3,11 +3,12 @@
 2nd manual run, with the camera condition already fixed by Launch 1. Manual
 driving (control + joystick) + recorder; NO perception. The recorder captures the
 RAW camera stream (/camera/image/compressed, not the perception overlay) so the
-offline track-condition analysis (offline/track_analyze.py) sees unannotated
-frames. Joystick START toggles each recording session.
+offline perception work sees unannotated frames. Joystick START toggles each
+recording session.
 
-Produces drive video for: offline band/color/ROI/lane-width analysis (pipeline
-step 4) that seeds the G1..G6 groups.
+Produces drive video for offline perception (pipeline steps 4-6): the confirmed
+7-label BEV method (offline/lane7_probe.py). The old front-view track-condition
+tool (track_analyze.py) was removed.
 
     ros2 launch control record_manual.launch.py
     ros2 launch control record_manual.launch.py record_dir:=/abs/path

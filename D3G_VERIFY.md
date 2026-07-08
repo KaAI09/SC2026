@@ -140,14 +140,13 @@ ls -lt $HOME/bagfile/drive_*.mp4 | head
 
 | D3-G 산출물 | 다음(오프라인, 로컬) |
 |---|---|
-| `raw_*.mp4` (Launch 2) | `track_analyze.py` → 밴드/ROI/차선폭 (Step 4) |
-| track 영상 | `perception_preview/select` → 검출 선정 → profile [perception] (Step 5-6) |
+| `raw_*.mp4` (Launch 2) | `lane7_probe.py` → 7-label BEV 지각 확정(Step 4-6, 시각 확인; 자동 export 없음) |
 | `drive_*.mp4 + .csv` (Launch 3) | `control_predict/select` → 제어 선정 → profile [control] (Step 8-9) |
 | 자율 `drive_*` (Launch auto) | **Step 12 보정(보류)** |
 
 ## 7. 문제 시 체크리스트
 - 노드 안 뜸 → `ros2 node list`, 런치 콘솔 에러(패키지 빌드 여부, `source install/setup.bash`).
 - 카메라 없음 → `ros2 topic hz /camera/image/compressed`, `vehicle_config.yaml`의 `USB_CAM_DEVICE`.
-- 지각 값 이상 → profile 밴드/ROI가 이 카메라와 안 맞음 → `track_analyze.py`로 재측정(2026은 필수).
+- 지각 값 이상 → profile 밴드/ROI(front-view baseline)가 이 카메라와 안 맞음 → 온라인은 front-view `lane_core` 유지(BEV 통합은 실차 후), 밴드/ROI는 profile을 손수 조정. (perception 확정 방식은 오프라인 `lane7_probe.py` 7-label BEV.)
 - 구동 안 함(auto) → `engage` 파라미터, E-stop 래치 상태(X 눌렀는지), conf_gate 미달.
 - 트림/가속 저장 안 됨 → vehicle_config.yaml 쓰기 권한, `calibration_mode:=true` 여부.

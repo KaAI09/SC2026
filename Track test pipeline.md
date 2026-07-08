@@ -45,19 +45,13 @@
 - 저장: `recorder_node`가 START→STOP마다 원본 `raw_<ts>.mp4`(+csv) ✅ (image_topic=`/camera/image/compressed` 원본)
 - → **Launch 2** ✅ `control/launch/record_manual.launch.py` (`camera + control + joystick + recorder`, perception 미포함). D3-G 검증 대기.
 
-### 💻 오프라인 — 트랙 컨디션 분석 & 지각 선정
+### 💻 오프라인 — 지각(확정: 7-label BEV)
 
-**Step 4** — 수동 영상 기반 **트랙 컨디션 파라미터 분석**(밴드값·색상필드·ROI·차선폭)
+**Step 4-6** — 차선 검출·인지·지각 **7-label BEV 방식 확정** (2026-07-08)
 - 위치: 오프라인(로컬)
-- → ✅ **`offline/track_analyze.py`**: 클립에서 흰/노랑 HSV 밴드, ROI 히트맵, 차선폭(lane_width_default) 측정 → 제안 Cfg override 출력 + heatmap/masks PNG. 프로파일은 쓰지 않음(측정만).
-  (2025 대시캠 실측: white S≤35/V≥175, yellow H20-34/S63/V111, lane_width≈0.44. roi_top_frac는 근접영상 특성상 낮게 나와 heatmap로 확인 — 차량 카메라에선 자동값 적절.)
-
-**Step 5** — (오프라인 1단계) 도출 파라미터로 **G1~G6 적용 테스트**
-- → ✅ **`offline/perception_preview.py`** (`--group G#`, 3패널)
-
-**Step 6** — (오프라인 2단계) 결과 비교·분석 → **최적 검출 로직 선정**
-- → ✅ **`offline/perception_select.py`** (group×clip 복합점수 매트릭스 + 검출 격자, 사람이 profile `perception:` export)
-- 산출: `config/profiles/<track>.yaml` [perception]
+- → ✅ **`offline/lane7_probe.py`**: BEV(원근제거) + sliding-window(방향 EMA 곡선추종) + 2차 polyfit, 7라벨(W-L/R·YS/YL/YR-L/R), 창 IOU 중복병합, heading+곡률 turn, pair-gate 중앙선, coast fallback, 6패널 시각화(독립 실행).
+- 기존 front-view 탐색 도구 `track_analyze.py`·`perception_preview.py`(G1~G6)·`perception_select.py`는 **제거됨**.
+- **온라인 BEV 통합은 실차 테스트 완료 후로 연기**: 향후 별도 BEV 코어(`driving_core/bev_lane.py` 등) + 카메라 캘리브레이션 코드 신설 예정. 그전까지 온라인 인지는 front-view `driving_core/lane_core.py` 유지, profile `[perception]`은 front-view baseline(자동 export 없음).
 
 ### 🚗 3차 주행 — 지각 예측 + 수동 로그 동시 확보
 
@@ -99,9 +93,7 @@
 | launch | **Launch 2** `record_manual.launch.py` | 3 | ✅ (recorder 원본영상, perception 없음) |
 | launch | **Launch 3** `online_manual.launch.py` | 7 | ✅ 기존 재사용 (camera+control+joystick+perception+recorder) |
 | launch | **최종 자율** `online_auto.launch.py` | 11 | ✅ (perception+driving[engage]+recorder) |
-| offline | `track_analyze.py` | 4 | ✅ |
-| offline | `perception_preview.py` | 5 | ✅ |
-| offline | `perception_select.py` | 6 | ✅ |
+| offline | `lane7_probe.py` (7-label BEV, 지각 확정) | 4-6 | ✅ (온라인 BEV 통합은 실차 후) |
 | offline | `control_predict.py` | 8 | ✅ (실주행 CSV 검증 대기) |
 | offline | `control_select.py` | 9 | ✅ (실주행 CSV 검증 대기) |
 | online | profile 로더(perception/driving_node) | 10 | ✅ |
@@ -109,7 +101,7 @@
 
 ## 진행 순서 (권장)
 1. **Launch 1~3 리팩토링** + accel_ratio 저장 기능 (1차·2차·3차 주행 준비)
-2. `track_analyze.py`(Step 4) — 컨디션 파라미터 자동 산출
+2. `lane7_probe.py`(Step 4-6) — 7-label BEV 지각 확정 (온라인 BEV 통합은 실차 후)
 3. `control_predict`/`control_select`(Step 8-9) — 제어 오프라인 4단계
 4. Step 12 보정 코드 — 자율 기록 기반 재피팅
 

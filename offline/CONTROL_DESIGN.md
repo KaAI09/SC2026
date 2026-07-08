@@ -1,6 +1,6 @@
 # 라인팔로잉 제어 설계 문서 (control_core.py / control_predict.py / control_select.py)
 
-> **성격**: perception(`lane_core`/`perception_preview`)과 같은 패턴 — **원리 고정 · 조건 파라미터화**의 config-driven 제어기. 코드+문서로 기록하고, 여러 제어기를 모드로 실험한다.
+> **성격**: perception(`lane_core`, 확정 지각은 7-label BEV `offline/lane7_probe.py`)과 같은 패턴 — **원리 고정 · 조건 파라미터화**의 config-driven 제어기. 코드+문서로 기록하고, 여러 제어기를 모드로 실험한다(제어 도구는 유지).
 > **비목표**: 이 모듈은 **차량을 구동하지 않는다**. 지각 상태 → `(steering, throttle)` 명령만 계산. 실제 발행/구동은 별도 노드 + 차량안전 계층 + 명시적 승인.
 > **파일 역할**: `control_predict.py`(영상+수동CSV+perception profile → 컨트롤러별 명령 **예측 계산** → 예측 CSV) → `control_select.py`(예측 CSV를 **open-loop 제어지표**로 랭킹 + 선택 export). 제어 로직 자체는 공유 코어 `driving_core.control_core.Controller`가 실행(온라인 노드와 동일).
 > **관련**: 전체 흐름·핸드오프는 [PIPELINE.md](PIPELINE.md). 지각 출력은 [LANE_DETECTION.md](LANE_DETECTION.md)의 `center_error / ema / heading / confidence`. 데이터는 recorder가 START 녹화 시 남기는 동기 `drive_<ts>.mp4` + `drive_<ts>.csv`(프레임 1:1 정렬).
@@ -61,7 +61,7 @@
 녹화 영상은 **사람이 지난 경로의 카메라 뷰**만 담는다. 컨트롤러가 다르게 조향했다면 차량 pose·뷰·차선 상태가 달라지지만 그 뷰는 존재하지 않는다. 따라서 **"컨트롤러가 실제로 몰았을 때의 차선중심-차량중심 오차"는 offline으로 측정 불가**하고, 녹화의 `center_error`는 전부 사람 궤적 값이라 컨트롤러 랭킹에 못 쓴다. → 평가는 **사람 모방 정확도가 아니라, 명령 자체의 품질(open-loop)** 로 한다. (사람 주행은 정답이 아니라 참조.)
 
 ### 5.1 control_predict.py — 명령 예측 계산
-입력 = **영상 + 수동 CSV + ②가 고른 perception profile**. 프레임마다:
+입력 = **영상 + 수동 CSV + profile의 perception 섹션**(현재 front-view baseline `lane_core`; perception 확정은 BEV지만 온라인 통합은 실차 후). 프레임마다:
 1. profile의 perception으로 `LanePipeline`을 **영상에 재실행** → lane state(record-time 검출값에 의존 X, 새 지각+제어 조합을 재녹화 없이 평가).
 2. 각 컨트롤러 후보(`--controllers C1,C2,C4` + override)를 `Controller.step(state, dt)`로 돌려 조향/스로틀 **예측**.
 3. 같은 행의 `manual_steering/throttle`과 함께 **예측 CSV**로 저장(프레임 1:1 정렬).

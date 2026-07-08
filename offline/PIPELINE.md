@@ -1,5 +1,9 @@
 # 오프라인 파이프라인 구조 (offline/)
 
+> **⚑ 갱신 (2026-07-08)**: perception 탐색 도구(`perception_preview.py`/`perception_select.py`/`track_analyze.py`)는 **제거됨**.
+> perception은 **7-label BEV 방식 `offline/lane7_probe.py`(독립 실행)** 로 확정([LANE_DETECTION.md](LANE_DETECTION.md) 상단 공지). 온라인 BEV 통합은 실차 테스트 후로 연기.
+> 오프라인에 남는 것은 **제어 도구 2 + 공용 1**(`control_predict.py`·`control_select.py`·`_common.py`)뿐이며, 아래 지각 관련 서술(perception_preview/select 흐름)은 그 범위에서 읽는다.
+
 > **성격**: 로컬 실험 도구. 차량/배포 코드가 아니며, 실제 주행·구동을 하지 않는다.
 > 모든 검출·제어 **로직은 공유 코어 `driving_core`**(온라인 노드와 동일)를 그대로 실행하고,
 > offline은 **영상/CSV 입출력 · 시각화 · 성능 지표 · 조합 선택**만 담당한다(single-source).
@@ -29,43 +33,42 @@
 
 ---
 
-## 1. 5개 파일과 역할 (지각 2 + 제어 2 + 공용 1)
+## 1. 파일과 역할 (지각: lane7_probe 독립 + 제어 2 + 공용 1)
 
 | 파일 | 도메인 | 역할 | 입력 | 출력 |
 |---|---|---|---|---|
-| **perception_preview.py** | 지각 | 검출 적용 + 3패널 시각화 | 영상 | `rslt/*__<mode>.mp4` |
-| **perception_select.py** | 지각 | 조합 비교 + **지각 지표 랭킹** + 선택 export | 영상 | 비교 PNG + profile `perception:` |
+| **lane7_probe.py** | 지각(확정) | 7-label BEV 검출·인지(독립 실행, 프로파일 export 없음) + 6패널 시각화 | 영상 | 시각화 |
 | **control_predict.py** | 제어 | 실제 컨트롤러로 명령 **예측 계산**(open-loop) | 영상 + 수동 CSV + perception profile | 예측 CSV |
 | **control_select.py** | 제어 | **제어 지표 랭킹** + 선택 export | 예측 CSV (+수동 CSV, 영상) | 리포트 + profile `control:` |
-| **_common.py** | 공용 | 영상 IO · 패널 렌더 · CSV 로드/정렬 · profile r/w · 지표 헬퍼 | — | — |
+| **_common.py** | 공용 | 영상 IO · 패널 렌더 · CSV 로드/정렬 · profile r/w · 지표 헬퍼(현재 control 도구가 사용) | — | — |
 
-각 도메인은 **"적용+시각화 → 비교+핸드오프"** 로 대칭이다.
+- 제거됨: `perception_preview.py`·`perception_select.py`·`track_analyze.py`(perception 확정으로 불필요).
+- perception은 `lane7_probe.py`로 확정. 온라인 BEV 통합·캘리브레이션 코드는 실차 테스트 후 신설 예정이라 현재 오프라인→온라인 perception 핸드오프(profile `perception:` write)는 없다. 제어 도구는 여러 컨트롤러 비교를 위해 유지.
 
 ## 2. 데이터 흐름 (선형 의존)
 
 ```
-영상 ──▶ ① perception_preview   (mode/param을 눈으로 튜닝)
-영상 ──▶ ② perception_select ──▶ profiles/<track>.yaml [perception]  ═▶ D3-G
+영상 ──▶ lane7_probe (7-label BEV 검출·인지 확정, 6패널 시각화 — 독립)
+
+영상 + 수동CSV ──▶ ① control_predict (profile front-view perception을 영상에 재실행)──▶ 예측 CSV
                                           │
-영상 + 수동CSV ──▶ ③ control_predict (②의 perception을 영상에 재실행)──▶ 예측 CSV
-                                          │
-예측 CSV ──▶ ④ control_select ──▶ profiles/<track>.yaml [control]     ═▶ D3-G
+예측 CSV ──▶ ② control_select ──▶ profiles/<track>.yaml [control]     ═▶ D3-G
 ```
 
-- ②가 perception 섹션을 확정 → ③이 그 profile로 영상에 `LanePipeline`을 **재실행**해 lane state를
-  새로 생성(녹화 CSV의 record-time 검출값에 의존하지 않음 → 새 지각+제어 조합을 재녹화 없이 평가).
-- ③은 각 컨트롤러 후보를 `control_core.Controller.step()`으로 돌려 조향/스로틀을 예측만 한다(구동 X).
-- ④는 예측을 지표로 랭킹해 control 섹션을 확정. 최종 = 채워진 track profile 하나.
+- perception 확정은 `lane7_probe`가 시각으로 담당(자동 export 없음). **온라인 BEV 통합은 실차 후**라, profile `perception:` 섹션은 당분간 front-view baseline(`lane_core`) 유지.
+- ①은 profile의 front-view perception으로 영상에 `LanePipeline`을 **재실행**해 lane state를 새로 생성(녹화 CSV의 record-time 검출값에 의존하지 않음 → 새 제어 조합을 재녹화 없이 평가).
+- ①은 각 컨트롤러 후보를 `control_core.Controller.step()`으로 돌려 조향/스로틀을 예측만 한다(구동 X).
+- ②는 예측을 지표로 랭킹해 control 섹션을 확정.
 
 ## 3. 핸드오프 계약 (profile YAML)
 
 `config/profiles/<track>.yaml` — `driving_core.profile`가 로드. 키는 `Cfg`/`CtrlCfg` 필드와 1:1.
 ```yaml
 name: <track>
-perception: { mode: <str>, <lane_core.Cfg field>: <value>, ... }   # ②가 write
-control:    { controller: <str>, <control_core.CtrlCfg field>: <value>, ... }  # ④가 write
+perception: { mode: <str>, <lane_core.Cfg field>: <value>, ... }   # front-view baseline (수동 유지; BEV 통합 실차 후)
+control:    { controller: <str>, <control_core.CtrlCfg field>: <value>, ... }  # control_select가 write
 ```
-- **단일 파일 in-place 업데이트**: ②는 `perception:` 섹션만, ④는 `control:` 섹션만 교체하고 나머지는 보존.
+- **단일 파일 in-place 업데이트**: `control_select`는 `control:` 섹션만 교체하고 나머지는 보존. `perception:` 섹션은 현재 front-view baseline으로 손수 유지(perception_select 제거됨).
 - 온라인 소비: `perception_node`/`driving_node`가 `profile` 파라미터로 이 파일을 읽어
   `make_cfg(mode, **perception)` / `make_ctrl(controller, **control)`에 그대로 넘긴다.
 
@@ -84,7 +87,9 @@ shift). 따라서 **"컨트롤러가 실제로 몰았을 때의 차선중심-차
     포화율(|u| ≥ steer_max), 게이팅 횟수, 사람 조향 상관/MAE(**정답이 아닌 참조 지표**)
 - 궤적 기반 폐루프 지표(진동/발산)는 track 지도 기반 시뮬이 필요 → 별도/후순위.
 
-## 5b. perception_select (2단계) 상세 설계
+## 5b. perception_select (2단계) 상세 설계 — (superseded, 도구 제거됨)
+
+> perception이 7-label BEV(`lane7_probe.py`)로 확정되며 아래 front-view 6군 선정 설계는 은퇴했다. 설계 기록으로만 남긴다.
 
 6군이 **조건 전문가**라, "전체 1등"이 아니라 **조건별 승자 + 단일 설정이 트랙 전체를 커버하는지**를 본다(= "흰+노랑 통합 vs 구간전환" 결정 실험).
 

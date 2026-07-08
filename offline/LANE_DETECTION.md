@@ -1,6 +1,15 @@
-# 차선검출 오프라인 실험 설계 문서 (perception_preview.py / perception_select.py)
+# 차선검출 오프라인 실험 설계 문서 (superseded — 아래 확정 공지 참조)
 
-> **위치/성격**: `offline/`. 로컬 실험 도구이며 차량/배포 코드가 아님. 코드·문서는 저장소에 공유(추적)하되, 실행 결과물(`*.mp4`/`*.png`/`*.db3`)은 git-ignore.
+> **⚑ perception 확정 (2026-07-08)**: 차선 검출·인지·지각은 **7-label BEV 방식(`offline/lane7_probe.py`)** 으로 확정.
+> BEV(원근 제거) + sliding-window(방향 EMA 곡선 추종) + 2차 polyfit, 7라벨(W-L/R, YS/YL/YR-L/R),
+> 창 IOU 중복 병합, heading+곡률 기반 turn, pair-gate 중앙선(같은 side끼리·교차 쌍 배제 + 겹침 구간만),
+> coast fallback(쌍 결손 시 차선폭 절반 평행이동), 6패널 시각화.
+> **아래의 front-view G1~G6 탐색(`perception_preview.py`/`perception_select.py`)은 은퇴·제거됨** — 문서 본문 전체를 **(superseded)** 로 본다(설계 기록 보존용).
+> **온라인 BEV 통합은 실차 테스트 완료 후로 연기**: 향후 별도 BEV 코어 모듈(`driving_core/bev_lane.py` 등) + 카메라 캘리브레이션 전용 코드 신설 예정. 그 전까지 온라인 인지는 기존 front-view `driving_core/lane_core.py`를 그대로 사용(프로파일 perception 섹션도 front-view 유지).
+
+---
+
+> **위치/성격 (이하 superseded)**: `offline/`. 로컬 실험 도구이며 차량/배포 코드가 아님. 코드·문서는 저장소에 공유(추적)하되, 실행 결과물(`*.mp4`/`*.png`/`*.db3`)은 git-ignore.
 > **목적**: 녹화 클립으로 여러 검출 로직을 **모드 선택 + 파라미터 튜닝**만으로 비교하고, 대회 당일 실제 트랙에서 최적 조합을 고른다.
 > **비목표**: 이 문서/코드는 조향·throttle 등 차량 제어를 직접 수행하지 않는다(검출·상태추정까지만, 제어는 분리).
 > **파일 역할**: `perception_preview.py`(검출 적용 + 3패널 시각화) → `perception_select.py`(조합 비교 + 지각지표 랭킹 + 선택 export). 검출 로직 자체는 공유 코어 `driving_core.lane_core`가 실행(온라인 노드와 동일).
