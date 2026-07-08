@@ -64,8 +64,7 @@ class Cfg:
     sw_max_lanes: int = 3        # max base peaks per color
     sw_peak_min: int = 10        # min histogram peak (rows)
     sw_peak_sep: int = 45        # min peak separation (px)
-    sw_merge_min: int = 8        # windows overlapping >= this -> same lane -> merge
-    sw_merge_iou: float = 0.30   # per-row x-interval IOU >= this -> "overlap" once
+    merge_dx: float = 30.0       # two fits with MAX |dx| over their y-overlap < this -> same lane
     # D: classification (per-instance heading + curvature)
     heading_frac: float = 0.06   # |top-bottom x| >= this*W -> turn by heading
     curv_strong: float = 0.0015  # near-vertical but |a| >= this -> turn by curvature
@@ -203,18 +202,26 @@ def _find_peaks(hist, c):
     return sorted(peaks)
 
 
-def _win_overlap(wa, wb, iou_min):
-    n = 0
-    for i, (alo, ahi) in wa.items():
-        b = wb.get(i)
-        if b is None:
-            continue
-        blo, bhi = b
-        inter = max(0, min(ahi, bhi) - max(alo, blo))
-        union = max(ahi, bhi) - min(alo, blo)
-        if union > 0 and inter / union >= iou_min:
-            n += 1
-    return n
+def _same_lane(a, b, c):
+    """Two instances are the SAME physical lane only if their 2nd-order fits stay
+    close over the WHOLE shared y-range (MAX |dx| < merge_dx). Uses max, not mean,
+    so a pair that coincides at one end but SEPARATES at the other is NOT merged:
+      - Y-branch: arms share a stem (bottom) but diverge toward the top,
+      - perspective-converging pair: apart near the car, converge at the vanishing
+        point up top.
+    A thick/diagonal line split into parallel stacks stays close everywhere -> max
+    is small -> merged (which window-overlap merging misses, since diagonal stacks
+    never share a window column). Under-merging (staying two instances) is the safe
+    failure; wrongly merging a real branch is not."""
+    if a['coeffs'] is None or b['coeffs'] is None:
+        return False
+    ylo = max(float(a['ys'].min()), float(b['ys'].min()))
+    yhi = min(float(a['ys'].max()), float(b['ys'].max()))
+    if yhi - ylo < 1.0:                      # no shared y-range -> cannot judge
+        return False
+    yy = np.linspace(ylo, yhi, 7)
+    dx = float(np.abs(_ebottom(a['coeffs'], yy) - _ebottom(b['coeffs'], yy)).max())
+    return dx < c.merge_dx
 
 
 def sliding_window_lanes(mask, color, c, windows_out=None):
@@ -229,7 +236,6 @@ def sliding_window_lanes(mask, color, c, windows_out=None):
         step = 0.0
         prev_cx = None
         xs_all, ys_all, miss, hits = [], [], 0, 0
-        wins = {}
         for i in range(c.sw_nwin):
             ci = int(round(cur))
             ylo, yhi = H - (i + 1) * win_h, H - i * win_h
@@ -241,7 +247,6 @@ def sliding_window_lanes(mask, color, c, windows_out=None):
                 mx = float(wx.mean()) + xlo
                 xs_all.append(wx + xlo)
                 ys_all.append(wy + ylo)
-                wins[i] = (xlo, xhi)
                 if prev_cx is not None:
                     obs = max(-c.sw_margin, min(c.sw_margin, mx - prev_cx))
                     step = c.sw_dir_ema * obs + (1 - c.sw_dir_ema) * step
@@ -262,15 +267,18 @@ def sliding_window_lanes(mask, color, c, windows_out=None):
         if hits < c.sw_min_hits or y_span < c.sw_min_span * H:
             continue
         if np.unique(ys).size >= 5 and xs.size >= c.sw_minpix:
-            raw.append({'xs': xs, 'ys': ys, 'wins': wins, 'npix': int(xs.size), 'W': W})
+            raw.append({'xs': xs, 'ys': ys, 'npix': int(xs.size), 'W': W})
+    # strongest (most pixels) first, then drop near-duplicate fits (a thick/diagonal
+    # line split into parallel stacks). Merge by polynomial proximity, not window
+    # overlap: diagonal splits never share window columns but their fits coincide.
     raw.sort(key=lambda r: -r['npix'])
     kept = []
     for r in raw:
-        if any(_win_overlap(r['wins'], k['wins'], c.sw_merge_iou) >= c.sw_merge_min
-               for k in kept):
+        ins = _build_instance(r['ys'], r['xs'], color, c, r['W'])
+        if ins['coeffs'] is not None and any(_same_lane(ins, k, c) for k in kept):
             continue
-        kept.append(r)
-    return [_build_instance(k['ys'], k['xs'], color, c, k['W']) for k in kept]
+        kept.append(ins)
+    return kept
 
 
 # ==========================================================================
@@ -353,8 +361,11 @@ def ego_center(centers, lanes, w, width):
     dx = width / 2.0 if near['x_bottom'] < cx else -width / 2.0
     coeffs = _shift(near['coeffs'], dx)
     xb = near['x_bottom'] + dx
+    # clamp to the source lane's observed span so heading/curvature/drawing never
+    # extrapolate the parabola beyond where the lane was actually detected.
     return {'coeffs': coeffs, 'x_bottom': xb, 'offset': xb - cx, 'ego': True,
-            'a': near, 'b': None, 'coast': True}
+            'a': near, 'b': None, 'coast': True,
+            'y_lo': float(near['ys'].min()), 'y_hi': float(near['ys'].max())}
 
 
 # ==========================================================================

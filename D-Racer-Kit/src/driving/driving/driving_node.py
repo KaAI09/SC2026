@@ -5,10 +5,11 @@ controller, and publishes control_msgs/Control **only when engaged**. Everything
 else is a safety layer. This node does NOT do perception and does NOT record.
 
 SAFETY MODEL
-  * engage: a boolean parameter (default False). Autonomous commands are
-    published only while `engage:=true` (toggle live via `ros2 param set`).
+  * engage: autonomous commands are published only while engaged. Two OR'd
+    sources: the `engage` parameter (default False, `ros2 param set`) OR the
+    joystick A button (Joystick.engage, toggles live). Either enables output.
   * E-STOP: joystick X button (Joystick.e_stop_en) latches a stop; while
-    stopped the node publishes neutral (0, 0).
+    stopped the node publishes neutral (0, 0) and A-engage is forced off.
   * When idle / E-stopped / low-confidence / lane lost -> throttle 0.
   * steering is clamped + slew-limited (in the controller); the node always
     publishes at publish_rate so the actuator's control_timeout watchdog stays
@@ -96,6 +97,7 @@ class DrivingNode(Node):
 
         # state
         self.e_stop = False
+        self.js_engage = False        # joystick A-button engage (OR'd with param)
         self.latest_cmd = (0.0, 0.0)
         self.prev_t = None
 
@@ -105,8 +107,8 @@ class DrivingNode(Node):
         self.timer = self.create_timer(1.0 / self.publish_rate, self.publish_cmd)
 
         self.get_logger().warning(
-            'driving_node up. ACTUATION: publishes /control ONLY when engage:=true. '
-            'E-STOP=joystick X. Wheels off the ground first. '
+            'driving_node up. ACTUATION: publishes /control ONLY when engaged '
+            '(engage:=true OR joystick A). E-STOP=joystick X. Wheels off the ground first. '
             f'controller={gp("controller").value} '
             f'throttle_base={gp("throttle_base").value} steer_max={gp("steer_max").value}'
         )
@@ -117,6 +119,7 @@ class DrivingNode(Node):
             if not self.e_stop:
                 self.get_logger().error('E-STOP latched (joystick X). Autonomous output disabled.')
             self.e_stop = True
+        self.js_engage = bool(msg.engage)
 
     def state_callback(self, msg: LaneState):
         t = msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9
@@ -139,7 +142,8 @@ class DrivingNode(Node):
 
     # ---- output (safety-gated) -------------------------------------------
     def publish_cmd(self):
-        engage = bool(self.get_parameter('engage').value)   # live-toggleable
+        # engage if EITHER the param (ros2 param set) OR the joystick A-button is on
+        engage = bool(self.get_parameter('engage').value) or self.js_engage
         if self.e_stop or not engage:
             steer, thr = 0.0, 0.0
         else:

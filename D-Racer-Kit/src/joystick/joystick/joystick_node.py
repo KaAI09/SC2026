@@ -79,8 +79,10 @@ class JoystickNode(Node):
         self._prev_b_pressed = False
         self._prev_x_pressed = False
         self._prev_start_pressed = False
+        self._prev_a_pressed = False
         self.e_stop_latched = False
         self.is_recording = False
+        self.engage_latched = False       # A button toggles autonomous engage
         self._debug_left_y = 0.0
         self._debug_right_x = 0.0
         self._debug_right_y = 0.0
@@ -258,6 +260,20 @@ class JoystickNode(Node):
 
         self._prev_start_pressed = start_pressed
 
+    def update_engage_from_buttons(self, data):
+        # A toggles autonomous engage, published in the Joystick msg. driving_node
+        # OR-combines this with its `engage` param (either can engage). E-STOP wins:
+        # a latched X forces engage off here so the flag can never re-enable output.
+        if self.e_stop_latched:
+            self.engage_latched = False
+        a_pressed = bool(data.button_a)
+        if a_pressed and not self._prev_a_pressed and not self.e_stop_latched:
+            self.engage_latched = not self.engage_latched
+            self.get_logger().warning(
+                'ENGAGE ON (joystick A) — autonomous output enabled' if self.engage_latched
+                else 'engage off (joystick A)')
+        self._prev_a_pressed = a_pressed
+
     def read_steering_axis(self, data):
         right_x = self.clamp(data.analog_stick_right.x)
         right_y = self.clamp(data.analog_stick_right.y)
@@ -275,6 +291,7 @@ class JoystickNode(Node):
                 self.update_accel_ratio_from_buttons(data)
                 self.update_steering_trim_from_buttons(data)
                 self.update_e_stop_from_buttons(data)
+                self.update_engage_from_buttons(data)
                 self.update_recording_from_buttons(data)
                 with self.lock:
                     self.latest_input = data
@@ -322,6 +339,7 @@ class JoystickNode(Node):
         msg.accel_ratio = float(self.accel_ratio)
         msg.e_stop_en = bool(self.e_stop_latched)
         msg.is_recording = bool(self.is_recording)
+        msg.engage = bool(self.engage_latched)
         self.joystick_pub.publish(msg)
 
     def debug_timer_callback(self):
