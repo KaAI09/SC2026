@@ -2,8 +2,7 @@
 
 No autonomous actuation. control_node runs in joystick mode (the human drives);
 perception_node runs the offline-selected profile and publishes /lane/state +
-a debug overlay; recorder_node writes mp4 + csv on the joystick START button
-(rosbag is handled by joystick_node's START -> data_acquisition.sh).
+a debug overlay; recorder_node writes mp4 + csv on the joystick START button.
 
 Use for: perception validation on the real track and driving-data collection.
 

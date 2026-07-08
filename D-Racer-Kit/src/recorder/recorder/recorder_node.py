@@ -7,8 +7,8 @@ START button (Joystick.is_recording) and, per START->STOP cycle, writes:
   * drive_<timestamp>.csv  -- per-frame LaneState paired with BOTH the autonomous
     /control command and the manual joystick command (for imitation eval).
 
-Rosbag recording is intentionally NOT done here: joystick_node already owns it
-(START runs data_acquisition.sh -> ros2 bag). This node only adds mp4 + csv.
+This is the ONLY recorder: START (Joystick.is_recording) writes mp4 + csv.
+Rosbag recording was removed from the START path (no longer used).
 
 Topics (all subscribe):
   image_topic  (sensor_msgs/CompressedImage)  default /lane/debug/compressed
@@ -85,7 +85,7 @@ class RecorderNode(Node):
         self.get_logger().info(
             f'recorder_node: image={image_topic} state={state_topic} '
             f'control={control_topic} dir={self.record_dir} '
-            '(mp4 + csv on joystick START; bag is owned by joystick_node)'
+            '(mp4 + csv on joystick START)'
         )
 
     # ---- signal inputs ----------------------------------------------------

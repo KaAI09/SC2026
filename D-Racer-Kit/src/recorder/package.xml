@@ -4,7 +4,7 @@
   <name>recorder</name>
   <version>0.0.0</version>
   <description>Recorder node: synchronized driving video (mp4) + driving log (csv),
-  toggled by the joystick START button. Rosbag is owned by joystick_node.</description>
+  toggled by the joystick START button. The only recorder (no rosbag).</description>
   <maintainer email="sooyong.park@telechips.com">topst</maintainer>
   <license>TODO: License declaration</license>
 

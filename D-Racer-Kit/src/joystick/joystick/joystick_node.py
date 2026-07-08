@@ -1,6 +1,4 @@
 import os
-import signal
-import subprocess
 import threading
 import time
 from pathlib import Path
@@ -23,14 +21,6 @@ def get_default_vehicle_config_path():
     return '/home/topst/SC2026/D-Racer-Kit/src/config/vehicle_config.yaml'
 
 
-def get_default_data_acquisition_script_path():
-    for base_path in Path(__file__).resolve().parents:
-        candidate = base_path / 'src' / 'data_acquisition.sh'
-        if candidate.exists():
-            return str(candidate)
-    return '/home/topst/SC2026/D-Racer-Kit/src/data_acquisition.sh'
-
-
 class JoystickNode(Node):
     def __init__(self):
         super().__init__('joystick_node')
@@ -46,10 +36,6 @@ class JoystickNode(Node):
         self.declare_parameter('calibration_mode', False)
         self.declare_parameter('calibration_step', 0.1)
         self.declare_parameter('vehicle_config_file', get_default_vehicle_config_path())
-        self.declare_parameter(
-            'data_acquisition_script',
-            get_default_data_acquisition_script_path(),
-        )
         self.declare_parameter('accel_ratio_step', 0.005)
         self.declare_parameter('accel_ratio_min', 0.12)
         self.declare_parameter('accel_ratio_max', 0.4)
@@ -70,9 +56,6 @@ class JoystickNode(Node):
         self.calibration_step = float(self.get_parameter('calibration_step').value)
         self.vehicle_config_file = os.path.expanduser(
             str(self.get_parameter('vehicle_config_file').value)
-        )
-        self.data_acquisition_script = os.path.expanduser(
-            str(self.get_parameter('data_acquisition_script').value)
         )
         self.accel_ratio_step = float(self.get_parameter('accel_ratio_step').value)
         self.accel_ratio_min = float(self.get_parameter('accel_ratio_min').value)
@@ -98,7 +81,6 @@ class JoystickNode(Node):
         self._prev_start_pressed = False
         self.e_stop_latched = False
         self.is_recording = False
-        self.recording_process = None
         self._debug_left_y = 0.0
         self._debug_right_x = 0.0
         self._debug_right_y = 0.0
@@ -132,7 +114,6 @@ class JoystickNode(Node):
             f'steering_deadzone={self.steering_deadzone}, steering_axis={self.steering_axis}, '
             f'steering_trim={self.steering_trim}, calibration_mode={self.calibration_mode}, '
             f'calibration_step={self.calibration_step}, vehicle_config_file={self.vehicle_config_file}, '
-            f'data_acquisition_script={self.data_acquisition_script}, '
             f'accel_ratio={self.accel_ratio}, accel_ratio_step={self.accel_ratio_step}, '
             f'accel_ratio_min={self.accel_ratio_min}, accel_ratio_max={self.accel_ratio_max}, '
             f'debug_log_enable={self.debug_log_enable}, debug_log_hz={self.debug_log_hz}'
@@ -264,71 +245,16 @@ class JoystickNode(Node):
 
         self._prev_x_pressed = x_pressed
 
-    def start_recording(self):
-        if self.recording_process is not None and self.recording_process.poll() is None:
-            self.is_recording = True
-            return
-
-        script_path = Path(self.data_acquisition_script)
-        if not script_path.exists():
-            self.is_recording = False
-            self.recording_process = None
-            self.get_logger().error(f'Data acquisition script not found: {script_path}')
-            return
-
-        try:
-            self.recording_process = subprocess.Popen(
-                [str(script_path)],
-                cwd=str(script_path.parent),
-                start_new_session=True,
-            )
-            self.is_recording = True
-            self.get_logger().info(f'Recording started: {script_path}')
-        except Exception as exc:
-            self.is_recording = False
-            self.recording_process = None
-            self.get_logger().error(f'Failed to start recording: {exc}')
-
-    def stop_recording(self):
-        process = self.recording_process
-        self.recording_process = None
-        self.is_recording = False
-
-        if process is None or process.poll() is not None:
-            return
-
-        try:
-            process.send_signal(signal.SIGTERM)
-            process.wait(timeout=5.0)
-            self.get_logger().info('Recording stopped')
-        except subprocess.TimeoutExpired:
-            self.get_logger().warning('Recording did not stop in time. Sending SIGKILL.')
-            os.killpg(process.pid, signal.SIGKILL)
-            process.wait(timeout=2.0)
-        except ProcessLookupError:
-            pass
-        except Exception as exc:
-            self.get_logger().error(f'Failed to stop recording cleanly: {exc}')
-
-    def sync_recording_state(self):
-        if self.recording_process is None:
-            self.is_recording = False
-            return
-
-        if self.recording_process.poll() is not None:
-            self.recording_process = None
-            self.is_recording = False
-            self.get_logger().info('Recording process exited')
-
     def update_recording_from_buttons(self, data):
+        # START toggles is_recording, published in the Joystick msg. recorder_node
+        # mirrors this flag to start/stop its mp4 + csv. No rosbag is spawned here.
         start_pressed = bool(data.button_start)
 
         if start_pressed and not self._prev_start_pressed:
-            self.sync_recording_state()
-            if self.is_recording:
-                self.stop_recording()
-            else:
-                self.start_recording()
+            self.is_recording = not self.is_recording
+            self.get_logger().info(
+                'recording started (recorder mp4+csv)' if self.is_recording
+                else 'recording stopped')
 
         self._prev_start_pressed = start_pressed
 
@@ -362,8 +288,6 @@ class JoystickNode(Node):
 
         if data is None:
             return
-
-        self.sync_recording_state()
 
         throttle_axis = self.deadzone(
             self.clamp(data.analog_stick_left.y),
@@ -420,7 +344,6 @@ class JoystickNode(Node):
 
     def destroy_node(self):
         self.running = False
-        self.stop_recording()
         reader_thread = getattr(self, 'reader_thread', None)
         if reader_thread is not None and reader_thread.is_alive():
             reader_thread.join(timeout=0.5)
