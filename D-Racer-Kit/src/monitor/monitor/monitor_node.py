@@ -3,7 +3,7 @@ from pathlib import Path
 import shutil
 
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
-from battery_msgs.msg import Battery
+from dracer_msgs.msg import Battery
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node

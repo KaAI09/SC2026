@@ -12,9 +12,9 @@ Rosbag recording was removed from the START path (no longer used).
 
 Topics (all subscribe):
   image_topic  (sensor_msgs/CompressedImage)  default /lane/debug/compressed
-  /lane/state  (lane_msgs/LaneState)
-  /control     (control_msgs/Control)          autonomous command
-  joystick     (joystick_msgs/Joystick)        is_recording + manual command
+  /lane/state  (dracer_msgs/LaneState)
+  /control     (dracer_msgs/Control)          autonomous command
+  joystick     (dracer_msgs/Joystick)        is_recording + manual command
 Params: image_topic, record_dir, record_fps, name_prefix.
 """
 import csv
@@ -28,9 +28,9 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage
-from control_msgs.msg import Control
-from joystick_msgs.msg import Joystick
-from lane_msgs.msg import LaneState
+from dracer_msgs.msg import Control
+from dracer_msgs.msg import Joystick
+from dracer_msgs.msg import LaneState
 
 
 def _f(v, nd=4):

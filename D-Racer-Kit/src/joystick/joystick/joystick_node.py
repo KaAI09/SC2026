@@ -8,8 +8,8 @@ from rclpy.node import Node
 from rclpy.parameter import Parameter
 import yaml
 
-from control_msgs.msg import Control
-from joystick_msgs.msg import Joystick
+from dracer_msgs.msg import Control
+from dracer_msgs.msg import Joystick
 from topst_utils.gamepads import ShanWanGamepad
 
 

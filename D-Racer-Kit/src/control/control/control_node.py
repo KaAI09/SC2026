@@ -5,8 +5,8 @@ import rclpy
 from rclpy.node import Node
 import yaml
 
-from control_msgs.msg import Control
-from joystick_msgs.msg import Joystick
+from dracer_msgs.msg import Control
+from dracer_msgs.msg import Joystick
 from topst_utils.d3racer import D3Racer
 
 

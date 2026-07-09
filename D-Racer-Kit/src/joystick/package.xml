@@ -8,8 +8,7 @@
   <license>TODO: License declaration</license>
 
   <depend>rclpy</depend>
-  <depend>control_msgs</depend>
-  <depend>joystick_msgs</depend>
+  <depend>dracer_msgs</depend>
   <depend>topst_utils</depend>
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>control</exec_depend>

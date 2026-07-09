@@ -7,11 +7,11 @@ overlay image for monitoring. It NEVER commands the vehicle and does NOT record
 
 Topics:
   sub : /camera/image/compressed  (sensor_msgs/CompressedImage)
-  pub : /lane/state               (lane_msgs/LaneState)
+  pub : /lane/state               (dracer_msgs/LaneState)
   pub : /lane/debug/compressed    (sensor_msgs/CompressedImage)  # 다패널 디버그(입력+ROI|mask|검출)
 Params:
-  mode (G1..G6 condition groups) + per-axis overrides, debug_scale, jpeg_quality,
-  log_hz, publish_debug.
+  profile ([perception] section applied), debug_scale, jpeg_quality, log_hz,
+  publish_debug.
 """
 import math
 import os
@@ -22,7 +22,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage
-from lane_msgs.msg import LaneState
+from dracer_msgs.msg import LaneState
 
 from driving_core.lane_core import LanePipeline, cfg_from_profile, render_panels
 from driving_core.profile import load_profile, section

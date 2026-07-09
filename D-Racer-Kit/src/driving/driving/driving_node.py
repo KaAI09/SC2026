@@ -1,7 +1,7 @@
 """Driving (control) node: LaneState -> shared controller -> /control.
 
 Consumes the perception node's LaneState, runs the shared `driving_core`
-controller, and publishes control_msgs/Control **only when engaged**. Everything
+controller, and publishes dracer_msgs/Control **only when engaged**. Everything
 else is a safety layer. This node does NOT do perception and does NOT record.
 
 SAFETY MODEL
@@ -19,8 +19,8 @@ Bring up only with the wheels off the ground first, then low speed, with a
 clear stop path.
 
 Topics:
-  sub : /lane/state (lane_msgs/LaneState), joystick (joystick_msgs/Joystick)
-  pub : /control    (control_msgs/Control)
+  sub : /lane/state (dracer_msgs/LaneState), joystick (dracer_msgs/Joystick)
+  pub : /control    (dracer_msgs/Control)
 """
 import math
 import os
@@ -29,9 +29,9 @@ import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rcl_interfaces.msg import SetParametersResult
-from control_msgs.msg import Control
-from joystick_msgs.msg import Joystick
-from lane_msgs.msg import LaneState
+from dracer_msgs.msg import Control
+from dracer_msgs.msg import Joystick
+from dracer_msgs.msg import LaneState
 
 from driving_core.control_core import Controller, make_ctrl
 from driving_core.profile import load_profile, section
