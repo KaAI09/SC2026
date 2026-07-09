@@ -16,10 +16,13 @@ CLAUDE.local.md
 venv/
 env/
 
-# ROS2 build outputs
+# ROS2 build outputs (repo root and D-Racer-Kit/)
 D-Racer-Kit/build/
 D-Racer-Kit/install/
 D-Racer-Kit/log/
+build/
+install/
+log/
 
 # Execution results & recordings (never upload, any directory)
 *.mp4

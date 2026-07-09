@@ -21,12 +21,12 @@ perception:
 
 control:
   controller: C2           # PD baseline
-  kp: 0.7
+  kp: 0.35
   kd: 0.1
   center_target: 0.0
-  steer_max: 0.9
+  steer_max: 0.8
   steer_sign: 1.0
   slew_rate: 0.15
   throttle_base: 0.20
-  throttle_min: 0.18
+  throttle_min: 0.19
   conf_gate: 0.4
