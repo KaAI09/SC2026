@@ -10,21 +10,24 @@ Topics:
   pub : /lane/state               (dracer_msgs/LaneState)
   pub : /lane/debug/compressed    (sensor_msgs/CompressedImage)  # 다패널 디버그(입력+ROI|mask|검출)
 Params:
-  profile ([perception] section applied), debug_scale, jpeg_quality, log_hz,
-  publish_debug.
+  profile ([perception] section seeds tuning), debug_scale, jpeg_quality, log_hz,
+  publish_debug, plus every perception_core.Cfg field as a LIVE param
+  (`ros2 param set` rebuilds the pipeline on change).
 """
 import math
 import os
+from dataclasses import fields as dc_fields
 
 import cv2
 import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rcl_interfaces.msg import SetParametersResult
 from sensor_msgs.msg import CompressedImage
 from dracer_msgs.msg import LaneState
 
-from dracer_core.perception_core import LanePipeline, cfg_from_profile, render_panels
+from dracer_core.perception_core import Cfg, LanePipeline, cfg_from_profile, render_panels
 from dracer_core.profile import load_profile, section
 
 
@@ -54,16 +57,30 @@ class PerceptionNode(Node):
         self.log_hz = float(gp('log_hz').value)
         self.publish_debug = bool(gp('publish_debug').value)
 
-        # One confirmed perception pipeline; the profile [perception] section
-        # supplies all tuning. (Experiment presets/mode/per-axis overrides removed;
-        # live tuning via ROS param callbacks comes in the tuning phase.)
+        # Perception tuning: every Cfg field is a live ROS param. The profile
+        # [perception] section seeds them; `ros2 param set` (or the monitor
+        # sliders) rebuilds the pipeline live via the on-set callback.
+        self._cfg_fields = [f.name for f in dc_fields(Cfg) if f.name != 'name']
         profile_path = os.path.expanduser(str(gp('profile').value))
+        psec = section(load_profile(profile_path), 'perception') if profile_path else {}
+        base = Cfg()
+        for name in self._cfg_fields:
+            default = getattr(base, name)
+            val = psec.get(name, default)
+            if name == 'colors':
+                val = [str(c) for c in val]
+            elif isinstance(default, bool):
+                val = bool(val)
+            elif isinstance(default, int):
+                val = int(val)
+            elif isinstance(default, float):
+                val = float(val)
+            self.declare_parameter(name, val)
         if profile_path:
-            self.cfg = cfg_from_profile(section(load_profile(profile_path), 'perception'))
             self.get_logger().info(f'perception: loaded profile {profile_path}')
-        else:
-            self.cfg = cfg_from_profile()
+        self.cfg = self._build_cfg()
         self.pipeline = LanePipeline(self.cfg)
+        self.add_on_set_parameters_callback(self._on_set_params)
 
         image_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST, depth=10,
@@ -82,6 +99,27 @@ class PerceptionNode(Node):
             f'debug={self.debug_topic} cfg={self.cfg.name} '
             '(perception-only; publishes LaneState, never /control)'
         )
+
+    # ---- perception params (profile seed + live tuning) ------------------
+    def _build_cfg(self, overrides=None):
+        """Build the perception Cfg from current param values (with optional
+        pending overrides applied on top, for the pre-set callback)."""
+        ov = overrides or {}
+        gp = self.get_parameter
+        d = {}
+        for name in self._cfg_fields:
+            val = ov[name] if name in ov else gp(name).value
+            d[name] = list(val) if name == 'colors' else val
+        return cfg_from_profile(d)
+
+    def _on_set_params(self, params):
+        """Live: rebuild the pipeline when any perception param is set."""
+        if {p.name for p in params} & set(self._cfg_fields):
+            ov = {p.name: p.value for p in params if p.name in self._cfg_fields}
+            self.cfg = self._build_cfg(ov)
+            self.pipeline = LanePipeline(self.cfg)
+            self.get_logger().info(f'perception live-update: {list(ov)}')
+        return SetParametersResult(successful=True)
 
     def image_callback(self, msg: CompressedImage):
         frame = cv2.imdecode(np.frombuffer(msg.data, dtype=np.uint8), cv2.IMREAD_COLOR)
