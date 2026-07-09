@@ -1,16 +1,13 @@
-"""Online AUTONOMOUS bring-up: perception -> driving -> /control -> actuator.
+"""Online MANUAL bring-up: joystick-driven car + live perception + recording.
 
-⚠ ACTUATION. driving_node publishes /control ONLY when engage:=true. Bring up
-with the wheels OFF THE GROUND first, verify perception + steering direction,
-then set engage. E-STOP = joystick X button.
+No autonomous actuation. control_node runs in joystick mode (the human drives);
+perception_node runs the offline-selected profile and publishes /lane/state +
+a debug overlay; recorder_node writes mp4 + csv on the joystick START button.
 
-Pipeline: camera -> perception_node (/lane/state) -> driving_node (/control,
-gated) -> control_node (PWM). recorder_node logs mp4 + csv on START. Both
-perception and control load the offline-selected profile.
+Use for: perception validation on the real track and driving-data collection.
 
-    ros2 launch control online_auto.launch.py                 # engage stays false
-    ros2 param set /driving_node engage true                  # after wheels-off check
-    ros2 launch control online_auto.launch.py profile:=/abs/path/track2025.yaml
+    ros2 launch control online_manual.launch.py
+    ros2 launch control online_manual.launch.py profile:=/abs/path/track2025.yaml
 """
 from pathlib import Path
 
@@ -18,7 +15,6 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterValue
 
 
 def _find(rel, fallback):
@@ -40,43 +36,33 @@ def generate_launch_description():
 
     profile = LaunchConfiguration('profile')
     record_dir = LaunchConfiguration('record_dir')
-    engage = LaunchConfiguration('engage')
 
     return LaunchDescription([
         DeclareLaunchArgument('profile', default_value=default_profile,
-                              description='driving profile YAML (perception + control)'),
+                              description='driving profile YAML (perception section applied)'),
         DeclareLaunchArgument('record_dir', default_value=default_record_dir,
                               description='directory for recorder mp4/csv output'),
-        DeclareLaunchArgument('engage', default_value='false',
-                              description='start autonomously actuating (keep false; '
-                                          'set true only after wheels-off checks)'),
         Node(
             package='camera', executable='camera_node', name='camera_node',
             output='screen',
             parameters=[{'vehicle_config_file': vehicle_config}],
         ),
         Node(
-            package='control', executable='control_node', name='control_node',
+            package='actuator', executable='actuator_node', name='actuator_node',
             output='screen',
-            parameters=[{'use_joystick_control': False,
+            parameters=[{'use_joystick_control': True,
                          'vehicle_config_file': vehicle_config}],
         ),
         Node(
             package='joystick', executable='joystick_node', name='joystick_node',
             output='screen',
-            parameters=[{'calibration_mode': False,
+            parameters=[{'calibration_mode': True,
                          'vehicle_config_file': vehicle_config}],
         ),
         Node(
             package='perception', executable='perception_node', name='perception_node',
             output='screen',
             parameters=[{'profile': profile}],
-        ),
-        Node(
-            package='driving', executable='driving_node', name='driving_node',
-            output='screen',
-            parameters=[{'profile': profile,
-                         'engage': ParameterValue(engage, value_type=bool)}],
         ),
         Node(
             package='recorder', executable='recorder_node', name='recorder_node',

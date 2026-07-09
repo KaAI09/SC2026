@@ -3,17 +3,15 @@
 <package format="3">
   <name>control</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>Driving (control) node: LaneState -> shared controller -> /control,
+  with engage/E-stop safety gating. Distinct from the low-level `control`
+  actuator driver package.</description>
   <maintainer email="sooyong.park@telechips.com">topst</maintainer>
   <license>TODO: License declaration</license>
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>dracer_msgs</exec_depend>
-  <exec_depend>picamera2</exec_depend>
-  <exec_depend>opencv-python</exec_depend>
-  <exec_depend>launch</exec_depend>
-  <exec_depend>launch_ros</exec_depend>
-  <exec_depend>joy</exec_depend>
+  <exec_depend>dracer_core</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

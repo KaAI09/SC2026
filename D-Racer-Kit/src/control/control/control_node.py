@@ -1,184 +1,200 @@
+"""Driving (control) node: LaneState -> shared controller -> /control.
+
+Consumes the perception node's LaneState, runs the shared `dracer_core`
+controller, and publishes dracer_msgs/Control **only when engaged**. Everything
+else is a safety layer. This node does NOT do perception and does NOT record.
+
+SAFETY MODEL
+  * engage: autonomous commands are published only while engaged. Two OR'd
+    sources: the `engage` parameter (default False, `ros2 param set`) OR the
+    joystick A button (Joystick.engage, toggles live). Either enables output.
+  * E-STOP: joystick X button (Joystick.e_stop_en) latches a stop; while
+    stopped the node publishes neutral (0, 0) and A-engage is forced off.
+  * When idle / E-stopped / low-confidence / lane lost -> throttle 0.
+  * steering is clamped + slew-limited (in the controller); the node always
+    publishes at publish_rate so the actuator's control_timeout watchdog stays
+    fresh. Kill this node and the car coasts to the watchdog stop.
+
+Bring up only with the wheels off the ground first, then low speed, with a
+clear stop path.
+
+Topics:
+  sub : /lane/state (dracer_msgs/LaneState), joystick (dracer_msgs/Joystick)
+  pub : /control    (dracer_msgs/Control)
+"""
+import math
 import os
-from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
-import yaml
-
+from rclpy.parameter import Parameter
+from rcl_interfaces.msg import SetParametersResult
 from dracer_msgs.msg import Control
 from dracer_msgs.msg import Joystick
-from topst_utils.d3racer import D3Racer
+from dracer_msgs.msg import LaneState
+
+from dracer_core.control_core import Controller, make_ctrl
+from dracer_core.profile import load_profile, section
 
 
-def get_default_vehicle_config_path():
-    for base_path in Path(__file__).resolve().parents:
-        candidate = base_path / 'src' / 'config' / 'vehicle_config.yaml'
-        if candidate.exists():
-            return str(candidate)
-    return '/home/topst/SC2026/D-Racer-Kit/src/config/vehicle_config.yaml'
+# CtrlCfg fields exposed as live-tunable ROS params (rebuilt on `ros2 param set`).
+_CTRL_FLOATS = ('kp', 'kd', 'ki', 'center_target', 'steer_max', 'steer_sign',
+                'slew_rate', 'out_ema', 'throttle_base', 'throttle_min',
+                'curv_slow', 'conf_gate')
+_CTRL_PARAMS = ('controller',) + _CTRL_FLOATS
+
+
+def _num(v, valid):
+    """LaneState float -> Python float or None (guarding NaN / invalid flag)."""
+    if not valid or v is None or math.isnan(v):
+        return None
+    return float(v)
 
 
 class ControlNode(Node):
     def __init__(self):
         super().__init__('control_node')
 
-        # ROS parameters
-        self.declare_parameter('i2c_bus', 3)
-        self.declare_parameter('pca9685_addr', 0x40)
-        self.declare_parameter('steering_channel', 0)
-        self.declare_parameter('throttle_channel', 1)
-        self.declare_parameter('vehicle_config_file', get_default_vehicle_config_path())
-        self.declare_parameter('use_joystick_control', False)
-        self.declare_parameter('joystick_topic', 'joystick')
-        self.declare_parameter('control_topic', '/control')
-        self.declare_parameter('command_hz', 10.0)
-        # Dead-man watchdog: in direct (/control) mode, auto-stop when the
-        # command stream stalls. <= 0 disables it. Ignored in joystick mode.
-        self.declare_parameter('control_timeout', 0.5)
+        p = self.declare_parameter
+        p('state_topic', '/lane/state')
+        p('joystick_topic', 'joystick')
+        p('control_topic', '/control')
+        p('publish_rate', 20.0)
+        p('engage', False)
+        # offline-selected profile (authoritative for the fields it specifies)
+        p('profile', '')
+        # control (C2 PD defaults, conservative)
+        p('controller', 'C2')
+        p('kp', 0.5)
+        p('kd', 0.1)
+        p('ki', 0.0)
+        p('center_target', 0.0)
+        p('steer_max', 0.8)
+        p('steer_sign', 1.0)
+        p('slew_rate', 0.15)
+        p('out_ema', 0.0)
+        p('throttle_base', 0.13)
+        p('throttle_min', 0.0)
+        p('curv_slow', 0.0)
+        p('conf_gate', 0.4)
 
-        i2c_bus = int(self.get_parameter('i2c_bus').value)
-        pca9685_addr = int(self.get_parameter('pca9685_addr').value)
-        steering_channel = int(self.get_parameter('steering_channel').value)
-        throttle_channel = int(self.get_parameter('throttle_channel').value)
-        self.vehicle_config_file = os.path.expanduser(
-            str(self.get_parameter('vehicle_config_file').value)
-        )
-        self.use_joystick_control = bool(self.get_parameter('use_joystick_control').value)
-        joystick_topic = str(self.get_parameter('joystick_topic').value)
-        control_topic = str(self.get_parameter('control_topic').value)
-        command_hz = float(self.get_parameter('command_hz').value)
-        if command_hz <= 0.0:
-            raise ValueError('command_hz must be greater than 0')
-        self.control_timeout = float(self.get_parameter('control_timeout').value)
+        gp = self.get_parameter
+        state_topic = str(gp('state_topic').value)
+        joystick_topic = str(gp('joystick_topic').value)
+        control_topic = str(gp('control_topic').value)
+        self.publish_rate = float(gp('publish_rate').value)
 
-        self.command_hz = command_hz
-        self.steer_trim = self.load_steer_trim()
-        # Timestamp of the most recent /control message (direct mode watchdog).
-        self.last_control_time = None
+        # profile (offline-selected) -> push into the ROS params so params are the
+        # single source of truth; then live `ros2 param set` tuning stays correct.
+        profile_path = os.path.expanduser(str(gp('profile').value))
+        if profile_path:
+            self._apply_profile_params(section(load_profile(profile_path), 'control'))
+            self.get_logger().info(f'control: loaded profile {profile_path}')
+        self.controller, self.conf_gate = self._build_controller()
+        # live tuning: rebuild the controller whenever a control param is set
+        self.add_on_set_parameters_callback(self._on_set_params)
 
-        self.d3_racer = D3Racer(
-            i2c_bus=i2c_bus,
-            pca9685_addr=pca9685_addr,
-            steering_channel=steering_channel,
-            throttle_channel=throttle_channel,
-        )
+        # state
+        self.e_stop = False
+        self.js_engage = False        # joystick A-button engage (OR'd with param)
+        self.latest_cmd = (0.0, 0.0)
+        self.prev_t = None
 
-        self.get_logger().info(
-            'd3_racer configured:\n'
-            f'  i2c_bus={i2c_bus}\n'
-            f'  pca9685_addr=0x{pca9685_addr:02X}\n'
-            f'  steering_channel={steering_channel}\n'
-            f'  throttle_channel={throttle_channel}\n'
-            f'  steer_trim={self.steer_trim}\n'
-            f'  use_joystick_control={self.use_joystick_control}\n'
-            f'  joystick_topic={joystick_topic}\n'
-            f'  control_topic={control_topic}\n'
-            f'  command_hz={self.command_hz}\n'
-            f'  control_timeout={self.control_timeout}\n'
-            f'  vehicle_config_file={self.vehicle_config_file}'
-        )
+        self.create_subscription(LaneState, state_topic, self.state_callback, 10)
+        self.create_subscription(Joystick, joystick_topic, self.joystick_callback, 10)
+        self.control_pub = self.create_publisher(Control, control_topic, 10)
+        self.timer = self.create_timer(1.0 / self.publish_rate, self.publish_cmd)
 
-        self.throttle = 0.0
-        self.steering = self.steer_trim
-        self.e_stop_active = False
-
-        # Control inputs
-        self.create_subscription(
-            Joystick,
-            joystick_topic,
-            self.joystick_callback,
-            10,
-        )
-        self.create_subscription(
-            Control,
-            control_topic,
-            self.control_callback,
-            10,
+        self.get_logger().warning(
+            'control_node up. ACTUATION: publishes /control ONLY when engaged '
+            '(engage:=true OR joystick A). E-STOP=joystick X. Wheels off the ground first. '
+            f'controller={gp("controller").value} '
+            f'throttle_base={gp("throttle_base").value} steer_max={gp("steer_max").value}'
         )
 
-        # Command output loop
-        self.timer = self.create_timer(1.0 / self.command_hz, self.timer_callback)
+    # ---- control params (profile load + live tuning) ---------------------
+    def _apply_profile_params(self, csec):
+        """Push a profile [control] section into the declared ROS params."""
+        updates = []
+        for k, v in csec.items():
+            if k == 'controller':
+                updates.append(Parameter('controller', Parameter.Type.STRING, str(v)))
+            elif k in _CTRL_FLOATS:
+                updates.append(Parameter(k, Parameter.Type.DOUBLE, float(v)))
+        if updates:
+            self.set_parameters(updates)
 
-    def timer_callback(self):
-        if self.e_stop_active:
-            self.apply_actuation(self.steering, 0.0)
-            return
+    def _build_controller(self, overrides=None):
+        """Build the Controller from current param values (with optional pending
+        overrides applied on top, for the pre-set callback)."""
+        ov = overrides or {}
+        gp = self.get_parameter
 
-        if self.is_control_stale():
-            # Command stream stalled in direct mode: hold steering neutral and
-            # cut throttle until fresh /control messages resume.
-            self.apply_actuation(self.steer_trim, 0.0)
-            return
+        def val(name):
+            return ov[name] if name in ov else gp(name).value
+        kw = {k: float(val(k)) for k in _CTRL_FLOATS}
+        return Controller(make_ctrl(str(val('controller')), **kw)), kw['conf_gate']
 
-        self.apply_actuation(self.steering, self.throttle)
+    def _on_set_params(self, params):
+        """Live: rebuild the controller when any control param is set."""
+        if any(p.name in _CTRL_PARAMS for p in params):
+            ov = {p.name: p.value for p in params if p.name in _CTRL_PARAMS}
+            self.controller, self.conf_gate = self._build_controller(ov)
+            self.get_logger().info(f'control live-update: {ov}')
+        return SetParametersResult(successful=True)
 
-    def is_control_stale(self):
-        # Watchdog only applies to direct (/control) mode. Joystick mode
-        # refreshes self.throttle continuously, so it never goes stale.
-        if self.use_joystick_control or self.control_timeout <= 0.0:
-            return False
-        if self.last_control_time is None:
-            # No /control command received yet: stay in the safe neutral state.
-            return True
-        elapsed = (self.get_clock().now() - self.last_control_time).nanoseconds / 1e9
-        return elapsed > self.control_timeout
-
-    def apply_actuation(self, steering, throttle):
-        self.d3_racer.set_steering_percent(float(steering))
-        self.d3_racer.set_throttle_percent(float(throttle))
-
+    # ---- inputs -----------------------------------------------------------
     def joystick_callback(self, msg: Joystick):
         if bool(msg.e_stop_en):
-            self.engage_e_stop()
-            return
+            if not self.e_stop:
+                self.get_logger().error('E-STOP latched (joystick X). Autonomous output disabled.')
+            self.e_stop = True
+        self.js_engage = bool(msg.engage)
 
-        if self.e_stop_active or not self.use_joystick_control:
-            return
+    def state_callback(self, msg: LaneState):
+        t = msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9
+        dt = 0.0 if self.prev_t is None else max(0.0, t - self.prev_t)
+        self.prev_t = t
 
-        self.steering = float(msg.control_msg.steering)
-        self.throttle = float(msg.control_msg.throttle)
+        center = _num(msg.center_error, msg.valid)
+        st = {
+            'center_error': center,
+            'ema': _num(msg.ema, msg.valid),
+            'heading': _num(msg.heading, msg.heading_valid),
+            'confidence': float(msg.confidence),
+        }
+        steer, thr, _ = self.controller.step(st, dt)
+        # node-level conservative safety: stop throttle on low conf / lost / hold
+        if (center is None or msg.confidence < self.conf_gate
+                or msg.state in ('LOST', 'HOLD')):
+            thr = 0.0
+        self.latest_cmd = (float(steer), float(thr))
 
-    def control_callback(self, msg: Control):
-        if self.e_stop_active or self.use_joystick_control:
-            return
-
-        # The autonomous command is symmetric about 0 (0 = straight). Add the servo
-        # trim so 0 maps to mechanical-straight, matching manual mode (which sends
-        # axis + trim); otherwise every command sits STEER_TRIM off center. Clamp.
-        self.steering = max(-1.0, min(1.0, float(msg.steering) + self.steer_trim))
-        self.throttle = float(msg.throttle)
-        self.last_control_time = self.get_clock().now()
-
-    def engage_e_stop(self):
-        if self.e_stop_active:
-            return
-
-        self.e_stop_active = True
-        self.throttle = 0.0
-        self.apply_actuation(self.steering, 0.0)
-        self.get_logger().warning('E-STOP engaged. Ignoring incoming throttle commands.')
-
-    def load_steer_trim(self):
-        if not os.path.exists(self.vehicle_config_file):
-            return 0.0
-
-        try:
-            with open(self.vehicle_config_file, 'r', encoding='utf-8') as config_stream:
-                config_data = yaml.safe_load(config_stream) or {}
-        except Exception as exc:
-            self.get_logger().warning(
-                f'Failed to read vehicle config file {self.vehicle_config_file}: {exc}'
-            )
-            return 0.0
-
-        return float(config_data.get('STEER_TRIM', 0.0))
+    # ---- output (safety-gated) -------------------------------------------
+    def publish_cmd(self):
+        # engage if EITHER the param (ros2 param set) OR the joystick A-button is on
+        engage = bool(self.get_parameter('engage').value) or self.js_engage
+        if self.e_stop or not engage:
+            steer, thr = 0.0, 0.0
+        else:
+            steer, thr = self.latest_cmd
+        m = Control()
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.header.frame_id = 'control'
+        m.steering = float(steer)
+        m.throttle = float(thr)
+        self.control_pub.publish(m)
 
     def destroy_node(self):
         try:
-            if hasattr(self, 'd3_racer') and self.d3_racer is not None:
-                self.apply_actuation(self.steer_trim, 0.0)
-        finally:
-            super().destroy_node()
+            m = Control()
+            m.header.stamp = self.get_clock().now().to_msg()
+            m.steering = 0.0
+            m.throttle = 0.0
+            self.control_pub.publish(m)
+        except Exception:  # noqa: BLE001
+            pass
+        super().destroy_node()
 
 
 def main(args=None):
@@ -187,7 +203,11 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        node.get_logger().info('KeyboardInterrupt. Shutting down.')
+        pass
     finally:
         node.destroy_node()
         rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

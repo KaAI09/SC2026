@@ -1,5 +1,5 @@
 # Lane perception state published by perception_node, consumed by control_node.
-# Mirrors the driving_core.lane_core pipeline output. Floats that can be absent
+# Mirrors the dracer_core.perception_core pipeline output. Floats that can be absent
 # are set to NaN and gated by `valid` (center_error) / heading_valid.
 std_msgs/Header header
 

@@ -1,6 +1,8 @@
+import os
+from glob import glob
 from setuptools import find_packages, setup
 
-package_name = 'driving'
+package_name = 'dracer_bringup'
 
 setup(
     name=package_name,
@@ -9,19 +11,16 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='topst',
     maintainer_email='sooyong.park@telechips.com',
-    description='Driving control node mapping LaneState to /control with safety gating.',
+    description='Launch files (bring-up) for the D-Racer track-test pipeline.',
     license='TODO: License declaration',
     extras_require={
         'test': ['pytest'],
     },
-    entry_points={
-        'console_scripts': [
-            'driving_node = driving.driving_node:main',
-        ],
-    },
+    # launch-only package: no console_scripts.
 )

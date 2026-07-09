@@ -1,17 +1,23 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>driving</name>
+  <name>dracer_bringup</name>
   <version>0.0.0</version>
-  <description>Driving (control) node: LaneState -> shared controller -> /control,
-  with engage/E-stop safety gating. Distinct from the low-level `control`
-  actuator driver package.</description>
+  <description>Launch files (bring-up) for the D-Racer track-test pipeline.</description>
   <maintainer email="sooyong.park@telechips.com">topst</maintainer>
   <license>TODO: License declaration</license>
 
-  <exec_depend>rclpy</exec_depend>
-  <exec_depend>dracer_msgs</exec_depend>
-  <exec_depend>driving_core</exec_depend>
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>ros2launch</exec_depend>
+  <exec_depend>camera</exec_depend>
+  <exec_depend>perception</exec_depend>
+  <exec_depend>control</exec_depend>
+  <exec_depend>actuator</exec_depend>
+  <exec_depend>joystick</exec_depend>
+  <exec_depend>monitor</exec_depend>
+  <exec_depend>recorder</exec_depend>
+  <exec_depend>battery</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

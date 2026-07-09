@@ -46,7 +46,7 @@ def generate_launch_description():
             parameters=[{'vehicle_config_file': vehicle_config}],
         ),
         Node(
-            package='control', executable='control_node', name='control_node',
+            package='actuator', executable='actuator_node', name='actuator_node',
             output='screen',
             parameters=[{'use_joystick_control': True,
                          'vehicle_config_file': vehicle_config}],
