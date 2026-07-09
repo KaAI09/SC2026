@@ -1,6 +1,6 @@
 """Perception node: camera -> shared lane pipeline -> LaneState (+ debug overlay).
 
-Pure perception. Runs the shared `driving_core.lane_core` pipeline and publishes
+Pure perception. Runs the shared `dracer_core.perception_core` pipeline and publishes
 the lane state on `/lane/state` for the control node, plus an optional debug
 overlay image for monitoring. It NEVER commands the vehicle and does NOT record
 (recording is a separate recorder node).
@@ -24,8 +24,8 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from sensor_msgs.msg import CompressedImage
 from dracer_msgs.msg import LaneState
 
-from driving_core.lane_core import LanePipeline, cfg_from_profile, render_panels
-from driving_core.profile import load_profile, section
+from dracer_core.perception_core import LanePipeline, cfg_from_profile, render_panels
+from dracer_core.profile import load_profile, section
 
 
 def _nan(v):

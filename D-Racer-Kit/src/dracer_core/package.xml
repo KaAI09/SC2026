@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>driving_core</name>
+  <name>dracer_core</name>
   <version>0.0.0</version>
-  <description>ROS-independent perception (lane_core) and control (control_core)
+  <description>ROS-independent perception (perception_core) and control (control_core)
   pipeline shared by the online nodes and the offline evaluation tools.
   Pure Python: depends only on numpy + opencv, no rclpy.</description>
   <maintainer email="sooyong.park@telechips.com">topst</maintainer>

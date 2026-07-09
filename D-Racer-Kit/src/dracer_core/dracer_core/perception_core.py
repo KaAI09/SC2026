@@ -17,7 +17,7 @@ Imported by BOTH the online perception node and the offline control tools
 (offline/control_predict.py). Depends only on cv2 + numpy.
 
 Usage:
-    from driving_core.lane_core import LanePipeline, Cfg, cfg_from_profile
+    from dracer_core.perception_core import LanePipeline, Cfg, cfg_from_profile
     pipe = LanePipeline(cfg_from_profile(profile['perception']))   # or Cfg()
     overlay_bgr, state = pipe.process(frame_bgr)   # state: dict (center_error, ...)
 

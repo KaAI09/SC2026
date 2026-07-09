@@ -4,7 +4,7 @@
 Inputs: a drive VIDEO + the paired manual CSV (recorder's frame-aligned log) + the
 perception PROFILE chosen in stage 2. For each frame we RE-RUN the selected
 perception on the video (fresh lane state, not the record-time columns), then step
-every candidate controller (driving_core.control_core.Controller) to predict a
+every candidate controller (dracer_core.control_core.Controller) to predict a
 (steering, throttle) command. Output is a wide predicted CSV consumed by stage 4
 (control_select.py).
 
@@ -15,16 +15,16 @@ human's lane states. See offline/CONTROL_DESIGN.md §5 for the open-loop rationa
         --profile ../D-Racer-Kit/src/config/profiles/track2025.yaml \
         --controllers C1,C2,C3,C4,C5
 
-Requires driving_core importable (pip install -e D-Racer-Kit/src/driving_core).
+Requires dracer_core importable (pip install -e D-Racer-Kit/src/dracer_core).
 """
 import argparse
 import os
 
 import numpy as np
 
-from driving_core.lane_core import LanePipeline, cfg_from_profile
-from driving_core.control_core import Controller, make_ctrl
-from driving_core.profile import load_profile, section
+from dracer_core.perception_core import LanePipeline, cfg_from_profile
+from dracer_core.control_core import Controller, make_ctrl
+from dracer_core.profile import load_profile, section
 
 import _common as cm
 

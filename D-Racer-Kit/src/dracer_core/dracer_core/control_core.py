@@ -1,13 +1,13 @@
 """ROS-independent lane-following controllers (principle fixed, all conditions
 parameterized).
 
-Mirrors the perception `lane_core` pattern: one config dataclass, controller
+Mirrors the perception `perception_core` pattern: one config dataclass, controller
 "modes" as presets C1..C5, and a stateful `Controller.step()` that maps a lane
 state to a (steering, throttle) command. The PRINCIPLE of each controller is
 fixed; everything that depends on the vehicle, track, or camera/resolution is a
 parameter so the same code retunes to any track.
 
-    from driving_core.control_core import Controller, make_ctrl
+    from dracer_core.control_core import Controller, make_ctrl
     ctrl = Controller(make_ctrl('C2', kp=0.7, center_target=-0.15))
     steer, thr, info = ctrl.step({'center_error': ce, 'ema': ema,
                                   'heading': hd_deg, 'confidence': conf,

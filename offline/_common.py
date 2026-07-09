@@ -1,9 +1,9 @@
 """Shared offline IO helpers: video read, CSV read/write, and profile writing.
-Kept thin — all detection/control LOGIC lives in driving_core.
+Kept thin — all detection/control LOGIC lives in dracer_core.
 
 Used by the control tools (control_predict / control_select). Rendering/metrics
 helpers were removed with the perception exploration tools; the perception debug
-overlay now lives in the pipeline itself (lane_core.render_panels).
+overlay now lives in the pipeline itself (perception_core.render_panels).
 """
 import csv
 import os
@@ -76,7 +76,7 @@ def write_profile_section(path, key, data):
     prof[key] = data
     header = (f'# Driving profile: {prof.get("name", clip_name(path))}\n'
               f'# offline -> online contract (control_select writes [control]).\n'
-              f'# Keys map 1:1 to driving_core Cfg (perception) / CtrlCfg (control).\n')
+              f'# Keys map 1:1 to dracer_core Cfg (perception) / CtrlCfg (control).\n')
     os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
         f.write(header)

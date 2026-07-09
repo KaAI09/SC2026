@@ -12,7 +12,7 @@ exactly "what the car runs".
 
 Schema (all keys optional; unspecified -> preset defaults):
     name: <str>
-    perception: { mode: <str>, <lane_core.Cfg field>: <value>, ... }
+    perception: { <perception_core.Cfg field>: <value>, ... }
     control:    { controller: <str>, <control_core.CtrlCfg field>: <value>, ... }
 """
 import yaml

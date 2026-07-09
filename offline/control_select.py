@@ -21,13 +21,13 @@ Export is human-triggered: --export CTRL --profile PATH writes the control secti
     python control_select.py rslt/pred_drive.csv --export C2 \
         --profile ../D-Racer-Kit/src/config/profiles/track2025.yaml
 
-Requires driving_core importable (pip install -e D-Racer-Kit/src/driving_core).
+Requires dracer_core importable (pip install -e D-Racer-Kit/src/dracer_core).
 """
 import argparse
 
 import numpy as np
 
-from driving_core.control_core import make_ctrl
+from dracer_core.control_core import make_ctrl
 
 import _common as cm
 

@@ -1,6 +1,6 @@
 """Driving (control) node: LaneState -> shared controller -> /control.
 
-Consumes the perception node's LaneState, runs the shared `driving_core`
+Consumes the perception node's LaneState, runs the shared `dracer_core`
 controller, and publishes dracer_msgs/Control **only when engaged**. Everything
 else is a safety layer. This node does NOT do perception and does NOT record.
 
@@ -33,8 +33,8 @@ from dracer_msgs.msg import Control
 from dracer_msgs.msg import Joystick
 from dracer_msgs.msg import LaneState
 
-from driving_core.control_core import Controller, make_ctrl
-from driving_core.profile import load_profile, section
+from dracer_core.control_core import Controller, make_ctrl
+from dracer_core.profile import load_profile, section
 
 
 # CtrlCfg fields exposed as live-tunable ROS params (rebuilt on `ros2 param set`).
