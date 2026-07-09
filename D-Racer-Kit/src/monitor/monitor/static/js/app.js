@@ -250,9 +250,13 @@ function refreshCameraFrame() {
 
 function startPolling() {
   fetchStatus();
-  refreshCameraFrame();
+  // Low-latency MJPEG stream: feed the <img> directly; the browser renders each
+  // pushed frame. Falls back to the placeholder if the stream cannot start.
+  const cam = elements.cameraFrame;
+  const placeholder = config.placeholderUrl || '/api/frame/placeholder';
+  cam.onerror = () => { cam.onerror = null; cam.src = placeholder; };
+  cam.src = config.streamEndpoint || '/api/stream';
   window.setInterval(fetchStatus, config.refreshIntervalMs);
-  window.setInterval(refreshCameraFrame, config.imageRefreshIntervalMs);
 }
 
 document.addEventListener('DOMContentLoaded', startPolling);

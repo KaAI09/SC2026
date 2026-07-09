@@ -1,5 +1,6 @@
 from pathlib import Path
 import threading
+import time
 
 try:
     from flask import Flask, Response, jsonify, render_template, send_file
@@ -74,6 +75,28 @@ def create_app(state, page_title,
         response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
         response.headers['Pragma'] = 'no-cache'
         return response
+
+    @app.get('/api/stream')
+    def api_stream():
+        # Low-latency MJPEG push (multipart/x-mixed-replace): send each new frame
+        # as soon as it arrives, skipping unchanged frames. Replaces the client
+        # poll of /api/frame — the browser <img> streams directly. No web buffering.
+        boundary = 'dracerframe'
+
+        def gen():
+            last = None
+            while True:
+                frame = state.get_latest_frame()
+                if frame is not None and frame is not last:
+                    last = frame
+                    yield (b'--' + boundary.encode() + b'\r\n'
+                           b'Content-Type: image/jpeg\r\n'
+                           b'Content-Length: ' + str(len(frame)).encode() + b'\r\n\r\n'
+                           + frame + b'\r\n')
+                time.sleep(0.02)   # cap state poll at ~50 Hz; latency ~= 1 frame
+
+        return Response(gen(),
+                        mimetype='multipart/x-mixed-replace; boundary=' + boundary)
 
     @app.get('/api/frame/placeholder')
     def api_frame_placeholder():
