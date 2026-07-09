@@ -64,4 +64,11 @@ def generate_launch_description():
                          'image_topic': '/camera/image/compressed',  # RAW, not overlay
                          'name_prefix': 'raw'}],
         ),
+        Node(
+            package='monitor', executable='monitor_node', name='monitor_node',
+            output='screen',
+            parameters=[{'vehicle_config_file': vehicle_config,
+                         # no perception here -> show the RAW camera feed
+                         'image_topic': '/camera/image/compressed'}],
+        ),
     ])

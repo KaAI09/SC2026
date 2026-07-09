@@ -83,4 +83,11 @@ def generate_launch_description():
             output='screen',
             parameters=[{'record_dir': record_dir}],
         ),
+        Node(
+            package='monitor', executable='monitor_node', name='monitor_node',
+            output='screen',
+            parameters=[{'vehicle_config_file': vehicle_config,
+                         # perception running -> stream the debug overlay (tuning view)
+                         'image_topic': '/lane/debug/compressed'}],
+        ),
     ])
