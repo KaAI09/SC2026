@@ -1,105 +1,54 @@
-# 오프라인 파이프라인 구조 (offline/)
+# 오프라인 도구 파이프라인
 
-> **⚑ 갱신 (2026-07-08)**: perception 탐색 도구(`perception_preview.py`/`perception_select.py`/`track_analyze.py`)는 **제거됨**.
-> perception은 **7-label BEV 방식 `offline/lane7_probe.py`(독립 실행)** 로 확정([LANE_DETECTION.md](LANE_DETECTION.md) 상단 공지). 온라인 BEV 통합은 실차 테스트 후로 연기.
-> 오프라인에 남는 것은 **제어 도구 2 + 공용 1**(`control_predict.py`·`control_select.py`·`_common.py`)뿐이며, 아래 지각 관련 서술(perception_preview/select 흐름)은 그 범위에서 읽는다.
+로컬(macOS, ROS 불필요, 레포 `.venv`)에서 도는 도구들. 코어(`dracer_core`)가
+순수 파이썬이라 온라인 노드와 **같은 알고리즘**을 오프라인에서 그대로 돌린다.
 
-> **성격**: 로컬 실험 도구. 차량/배포 코드가 아니며, 실제 주행·구동을 하지 않는다.
-> 모든 검출·제어 **로직은 공유 코어 `driving_core`**(온라인 노드와 동일)를 그대로 실행하고,
-> offline은 **영상/CSV 입출력 · 시각화 · 성능 지표 · 조합 선택**만 담당한다(single-source).
-> **최종 산출물**: 한 트랙의 검출·제어 조합을 담은 **driving-profile YAML**
-> (`config/profiles/<track>.yaml`) — 온라인 `perception_node`/`driving_node`가 로드하는
-> P5 계약. offline의 목표는 "무엇을 고를지"를 이 한 파일로 확정하는 것.
+## 구성
 
-관련 심화 문서: 지각 [LANE_DETECTION.md](LANE_DETECTION.md), 제어 [CONTROL_DESIGN.md](CONTROL_DESIGN.md).
+| 파일 | 역할 | 입력 | 출력 |
+|---|---|---|---|
+| `perception_probe.py` | 인지 실험/시각화 (BEV 실험 포함) | 영상 | 6패널 시각화 |
+| `control_predict.py` | 제어기 open-loop 예측 | drive 영상 + 수동 CSV + profile | `rslt/pred_*.csv` |
+| `control_select.py` | 제어 지표 랭킹 + profile `[control]` export | pred CSV | profile 갱신 |
+| `_common.py` | 영상/CSV/profile IO 헬퍼 | — | — |
 
----
+## 인지 (perception)
 
-## 0. 대상 트랙 (설계 범위 = 딱 2개)
+온라인 인지는 확정된 단일 파이프라인(`dracer_core.perception_core`)이고, **live
+파라미터 튜닝은 실차에서 `ros2 param set /perception_node …` + monitor(:5000)**로
+한다([../PERCEPTION.md](../PERCEPTION.md)). `perception_probe.py`는 그와 별개로
+**BEV 실험·시각화용 오프라인 도구**다(향후 캘리브레이션 BEV 개발 기준). 자동
+profile export는 없다 — `[perception]` 섹션은 손으로/실차 튜닝값으로 유지한다.
 
-모든 색상·ROI·차선폭·크기 조건은 **아래 두 트랙에서만** 도출한다(범용화하지 않음). 근거 자료도 이 둘로 한정.
-
-| | 2025 트랙 (테스트) | 2026 트랙 (본선) |
-|---|---|---|
-| 자료 | `offline/Dashcam(2025 Track)/*.mp4`(13개, 320×160) + `2025Track Info.png` | `Notice/2026 Track(1~4)`, `2026 SEAME 규정집.pdf`, `미션 및 규정 설명 OT.pdf` |
-| 주행 경계 | **얇은 흰색 실선 2줄**(양쪽) | **넓은 흑색 도로(≈350mm) + 양쪽 흰색 엣지 라인(≈30mm)** |
-| 중앙 특수 | 노랑/주황 **테이프** 지름길 + 회전교차로 | 노랑 **실선+점선 유도선** 회전교차로 |
-| 크기 | (도면만, 대시캠 튜닝) | ≈ **5172 × 4227 mm**, 곡률 R449~R1502, S자 슬라럼 |
-| 특수 요소 | 빨간 스쿨존, 횡단보도/정지선 | 빨간 구간, 체커 시작/피니시, 상단 island, ArUco(동적장애물) |
-
-- **공통 색상 모델**: 흰색 = 주행 경계(**M 프리셋**), 노랑/주황 = 로터리·지름길(**O 프리셋**). driving_core의 M/O 구조가 두 트랙 모두 커버.
-- **2026 주행영상(dashcam)은 대회 당일 업로드 예정** → 2026 지각 HSV/ROI 최종값은 그때 확정. 그 전 프로파일 값은 도면+2025 대시캠 기반 **provisional**.
-- 핸드오프 프로파일도 두 트랙 전용 2벌: `config/profiles/track2025.yaml`, `config/profiles/track2026.yaml`.
-
----
-
-## 1. 파일과 역할 (지각: lane7_probe 독립 + 제어 2 + 공용 1)
-
-| 파일 | 도메인 | 역할 | 입력 | 출력 |
-|---|---|---|---|---|
-| **lane7_probe.py** | 지각(확정) | 7-label BEV 검출·인지(독립 실행, 프로파일 export 없음) + 6패널 시각화 | 영상 | 시각화 |
-| **control_predict.py** | 제어 | 실제 컨트롤러로 명령 **예측 계산**(open-loop) | 영상 + 수동 CSV + perception profile | 예측 CSV |
-| **control_select.py** | 제어 | **제어 지표 랭킹** + 선택 export | 예측 CSV (+수동 CSV, 영상) | 리포트 + profile `control:` |
-| **_common.py** | 공용 | 영상 IO · 패널 렌더 · CSV 로드/정렬 · profile r/w · 지표 헬퍼(현재 control 도구가 사용) | — | — |
-
-- 제거됨: `perception_preview.py`·`perception_select.py`·`track_analyze.py`(perception 확정으로 불필요).
-- perception은 `lane7_probe.py`로 확정. 온라인 BEV 통합·캘리브레이션 코드는 실차 테스트 후 신설 예정이라 현재 오프라인→온라인 perception 핸드오프(profile `perception:` write)는 없다. 제어 도구는 여러 컨트롤러 비교를 위해 유지.
-
-## 2. 데이터 흐름 (선형 의존)
-
-```
-영상 ──▶ lane7_probe (7-label BEV 검출·인지 확정, 6패널 시각화 — 독립)
-
-영상 + 수동CSV ──▶ ① control_predict (profile front-view perception을 영상에 재실행)──▶ 예측 CSV
-                                          │
-예측 CSV ──▶ ② control_select ──▶ profiles/<track>.yaml [control]     ═▶ D3-G
+```bash
+cd offline
+../.venv/bin/python perception_probe.py <raw>.mp4 --stages --name t1
 ```
 
-- perception 확정은 `lane7_probe`가 시각으로 담당(자동 export 없음). **온라인 BEV 통합은 실차 후**라, profile `perception:` 섹션은 당분간 front-view baseline(`lane_core`) 유지.
-- ①은 profile의 front-view perception으로 영상에 `LanePipeline`을 **재실행**해 lane state를 새로 생성(녹화 CSV의 record-time 검출값에 의존하지 않음 → 새 제어 조합을 재녹화 없이 평가).
-- ①은 각 컨트롤러 후보를 `control_core.Controller.step()`으로 돌려 조향/스로틀을 예측만 한다(구동 X).
-- ②는 예측을 지표로 랭킹해 control 섹션을 확정.
+## 제어 (control) — 여러 컨트롤러 비교
 
-## 3. 핸드오프 계약 (profile YAML)
+open-loop(폐루프 궤적지표는 covariate shift로 불가): 영상에 인지를 재실행해 프레임별
+lane state를 만들고, 각 후보 컨트롤러(C1~C5)를 스텝해 명령을 예측 → 지표로 랭킹 →
+이긴 컨트롤러의 게인을 profile `[control]`에 기록.
 
-`config/profiles/<track>.yaml` — `driving_core.profile`가 로드. 키는 `Cfg`/`CtrlCfg` 필드와 1:1.
+```bash
+cd offline
+../.venv/bin/python control_predict.py <drive>.mp4 --csv <drive>.csv \
+    --profile ../D-Racer-Kit/src/config/profiles/track2025.yaml --controllers C1,C2,C3,C4,C5
+../.venv/bin/python control_select.py rslt/pred_<drive>.csv --export C2 \
+    --profile ../D-Racer-Kit/src/config/profiles/track2025.yaml
+```
+
+## profile — 오프라인↔온라인 계약
+
+`config/profiles/track2025.yaml` 한 파일. `control_select`가 `[control]` 섹션만
+in-place 교체(나머지 보존). 노드는 로드 시:
+`cfg_from_profile(perception)` / `make_ctrl(controller, **control)`.
+
 ```yaml
-name: <track>
-perception: { mode: <str>, <lane_core.Cfg field>: <value>, ... }   # front-view baseline (수동 유지; BEV 통합 실차 후)
-control:    { controller: <str>, <control_core.CtrlCfg field>: <value>, ... }  # control_select가 write
+perception: { <perception_core.Cfg field>: <value>, ... }   # 실차 live 튜닝값 유지
+control:     { controller: C2, kp: 0.5, ... }               # control_select가 기록
 ```
-- **단일 파일 in-place 업데이트**: `control_select`는 `control:` 섹션만 교체하고 나머지는 보존. `perception:` 섹션은 현재 front-view baseline으로 손수 유지(perception_select 제거됨).
-- 온라인 소비: `perception_node`/`driving_node`가 `profile` 파라미터로 이 파일을 읽어
-  `make_cfg(mode, **perception)` / `make_ctrl(controller, **control)`에 그대로 넘긴다.
 
-## 4. 성능 지표 (어디서 무엇을)
-
-**핵심 제약 — offline은 open-loop다.** 녹화 영상은 *사람이 지난 경로*의 뷰만 담는다. 컨트롤러가
-다르게 조향했다면 차량 pose·카메라 뷰·차선 상태가 달라지지만 그 뷰는 존재하지 않는다(covariate
-shift). 따라서 **"컨트롤러가 실제로 몰았을 때의 차선중심-차량중심 오차"는 offline으로 측정 불가**.
-녹화 데이터의 `center_error`는 전부 사람 궤적의 값이라 컨트롤러 랭킹에 쓸 수 없다. 그래서 지표를 둘로 나눈다.
-
-- **File 2 (지각 지표, 컨트롤러 무관)** — 자세히는 [LANE_DETECTION.md](LANE_DETECTION.md)
-  - 검출율(conf ≥ τ 프레임 비율), `center_error` std·bias(대칭성), heading jitter,
-    좌/우 균형(`per_lane_conf`), 프레임간 일관성
-- **File 4 (제어 지표, open-loop, 후보별)** — 자세히는 [CONTROL_DESIGN.md](CONTROL_DESIGN.md)
-  - 부드러움(mean|Δu|·RMS jerk), 흔들림(조향 부호변경률), 응답 정합성(u vs −e 부호일치/상관),
-    포화율(|u| ≥ steer_max), 게이팅 횟수, 사람 조향 상관/MAE(**정답이 아닌 참조 지표**)
-- 궤적 기반 폐루프 지표(진동/발산)는 track 지도 기반 시뮬이 필요 → 별도/후순위.
-
-## 5b. perception_select (2단계) 상세 설계 — (superseded, 도구 제거됨)
-
-> perception이 7-label BEV(`lane7_probe.py`)로 확정되며 아래 front-view 6군 선정 설계는 은퇴했다. 설계 기록으로만 남긴다.
-
-6군이 **조건 전문가**라, "전체 1등"이 아니라 **조건별 승자 + 단일 설정이 트랙 전체를 커버하는지**를 본다(= "흰+노랑 통합 vs 구간전환" 결정 실험).
-
-- **조건 라벨**: 클립→조건 **수동 매핑**(작은 라벨 파일). 확정 매핑: `401,403=white_line`, `411,413=white_curve`, `408,409,410=yellow_solid`, `404,405=yellow_dashed`, `406=white_yellow`, `407=robust`.
-- **처리**: 각 (그룹 × 클립) LanePipeline 전 프레임 실행 → 지각지표(coverage·center bias/jitter·heading jitter·L/R balance·outlier율) 집계 → **group×clip 매트릭스**.
-- **산출(사람이 판단)**: 자동 export 안 함. ① 지표 **매트릭스 리포트**(히트맵/표) + ② **조건별 검출 격자 PNG**(기존 compare식) 둘 다 출력 → 사람이 단일/전환 결정 후 profile `perception:` write.
-- 분석 관점: 조건별 최적 그룹 / 강건성 랭킹(전 클립 최악값) / 커버리지 갭(단일 그룹으로 모든 조건 합격 가능?).
-
-## 5. 산출물 & git
-
-- 코드(`*.py`)·문서(`*.md`)는 저장소 공유(추적).
-- 실행 결과물(`rslt/*.mp4`, `rslt/*.png`, 예측 `*.csv`)은 git-ignore.
-- profile YAML(`config/profiles/*.yaml`)은 **추적**(온라인 노드가 로드하는 계약이므로).
+profile YAML은 git 추적 → git으로 D3-G에 전달. 녹화(mp4/csv)는 미추적 → scp.
+상세 흐름은 [../Track test command.md](../Track%20test%20command.md).
