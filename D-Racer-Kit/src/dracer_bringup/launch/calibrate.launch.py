@@ -12,7 +12,7 @@ only pipeline launch that runs the web monitor, so battery_node runs here too.
 
 No perception, no recorder, no autonomous actuation — setup only.
 
-    ros2 launch control calibrate.launch.py
+    ros2 launch dracer_bringup calibrate.launch.py
 """
 from pathlib import Path
 

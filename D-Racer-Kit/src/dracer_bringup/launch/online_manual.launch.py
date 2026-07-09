@@ -6,8 +6,8 @@ a debug overlay; recorder_node writes mp4 + csv on the joystick START button.
 
 Use for: perception validation on the real track and driving-data collection.
 
-    ros2 launch control online_manual.launch.py
-    ros2 launch control online_manual.launch.py profile:=/abs/path/track2025.yaml
+    ros2 launch dracer_bringup online_manual.launch.py
+    ros2 launch dracer_bringup online_manual.launch.py profile:=$HOME/SC2026/D-Racer-Kit/src/config/profiles/track2025.yaml
 """
 from pathlib import Path
 

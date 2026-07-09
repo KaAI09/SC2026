@@ -10,8 +10,8 @@ Produces drive video for offline perception (pipeline steps 4-6): the confirmed
 7-label BEV method (offline/lane7_probe.py). The old front-view track-condition
 tool (track_analyze.py) was removed.
 
-    ros2 launch control record_manual.launch.py
-    ros2 launch control record_manual.launch.py record_dir:=/abs/path
+    ros2 launch dracer_bringup record_manual.launch.py
+    ros2 launch dracer_bringup record_manual.launch.py record_dir:=$HOME/bagfile
 """
 from pathlib import Path
 

@@ -8,9 +8,9 @@ Pipeline: camera -> perception_node (/lane/state) -> control_node (/control,
 gated) -> control_node (PWM). recorder_node logs mp4 + csv on START. Both
 perception and control load the offline-selected profile.
 
-    ros2 launch control online_auto.launch.py                 # engage stays false
+    ros2 launch dracer_bringup online_auto.launch.py                 # engage stays false
     ros2 param set /control_node engage true                  # after wheels-off check
-    ros2 launch control online_auto.launch.py profile:=/abs/path/track2025.yaml
+    ros2 launch dracer_bringup online_auto.launch.py profile:=$HOME/SC2026/D-Racer-Kit/src/config/profiles/track2025.yaml
 """
 from pathlib import Path
 
