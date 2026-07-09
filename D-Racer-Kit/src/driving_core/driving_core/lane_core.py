@@ -17,8 +17,8 @@ Imported by BOTH the online perception node and the offline control tools
 (offline/control_predict.py). Depends only on cv2 + numpy.
 
 Usage:
-    from driving_core.lane_core import LanePipeline, PRESETS, make_cfg
-    pipe = LanePipeline(make_cfg('G5', colors=('white', 'yellow')))
+    from driving_core.lane_core import LanePipeline, Cfg, cfg_from_profile
+    pipe = LanePipeline(cfg_from_profile(profile['perception']))   # or Cfg()
     overlay_bgr, state = pipe.process(frame_bgr)   # state: dict (center_error, ...)
 
 The pipeline NEVER commands the vehicle; it only produces a lane-state estimate
@@ -37,7 +37,7 @@ import numpy as np
 # ==========================================================================
 @dataclass
 class Cfg:
-    name: str = 'G5'
+    name: str = 'lane'
     # A: segmentation — WHITE + YELLOW; `colors` is a subset, masks OR-combined.
     colors: tuple = ('white', 'yellow')
     white_s_max: int = 60
@@ -83,35 +83,21 @@ class Cfg:
     median_window: int = 5
     conf_low: float = 0.25
     lost_stop_frames: int = 8
-    # legacy-compat flags (referenced by dead offline render helpers; unused here)
-    do_polyfit: bool = False
-    curvature: bool = False
-    per_lane_conf: bool = False
 
-
-# Condition-based groups kept as named entry points (make_cfg('G5') etc.). They
-# now differ only by color set / ROI; the sliding-window logic is shared.
-PRESETS = {
-    'G1': Cfg(name='G1 white', colors=('white',)),
-    'G2': Cfg(name='G2 white_curve', colors=('white',), white_v_min=175),
-    'G3': Cfg(name='G3 yellow_solid', colors=('yellow',)),
-    'G4': Cfg(name='G4 yellow_dashed', colors=('yellow',), morph_v=7),
-    'G5': Cfg(name='G5 white_yellow', colors=('white', 'yellow')),
-    'G6': Cfg(name='G6 robust', colors=('white',), white_s_max=70, white_v_min=160),
-}
 
 _FIELDS = {f.name for f in fields(Cfg)}
 
 
-def make_cfg(mode='G5', **overrides):
-    """Build a Cfg from a preset + overrides. Unknown keys (e.g. legacy per-axis
-    ROS params no longer modelled) are dropped rather than raising, so callers do
-    not have to track which axes still exist."""
-    base = PRESETS.get(mode, PRESETS['G5'])
-    ov = {k: v for k, v in overrides.items() if v is not None and k in _FIELDS}
-    if 'colors' in ov and isinstance(ov['colors'], list):
-        ov['colors'] = tuple(ov['colors'])
-    return replace(base, **ov) if ov else base
+def cfg_from_profile(section=None):
+    """Build the single perception Cfg from a profile [perception] dict. Unknown
+    keys (e.g. a leftover `mode:` or a param no longer modelled) are ignored;
+    `colors` list -> tuple. One confirmed pipeline — no experiment presets."""
+    ov = {}
+    for k, v in (section or {}).items():
+        if v is None or k not in _FIELDS:
+            continue
+        ov[k] = tuple(v) if (k == 'colors' and isinstance(v, list)) else v
+    return replace(Cfg(), **ov) if ov else Cfg()
 
 
 LABEL_COLORS = {  # BGR

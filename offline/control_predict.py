@@ -22,7 +22,7 @@ import os
 
 import numpy as np
 
-from driving_core.lane_core import LanePipeline, make_cfg
+from driving_core.lane_core import LanePipeline, cfg_from_profile
 from driving_core.control_core import Controller, make_ctrl
 from driving_core.profile import load_profile, section
 
@@ -30,12 +30,12 @@ import _common as cm
 
 
 def perception_from_profile(profile_path):
-    """Build the perception Cfg from a profile's perception section (stage-2 pick)."""
+    """Build the perception Cfg from a profile's [perception] section."""
     if not profile_path:
-        return make_cfg('G5')
+        return cfg_from_profile()
     psec = section(load_profile(profile_path), 'perception')
-    mode = str(psec.pop('mode', 'G5'))
-    return make_cfg(mode, **psec)
+    psec.pop('mode', None)          # legacy key, no longer used
+    return cfg_from_profile(psec)
 
 
 def run(video, csv_path, cfg, controllers, out_path):

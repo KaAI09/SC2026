@@ -24,7 +24,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from sensor_msgs.msg import CompressedImage
 from lane_msgs.msg import LaneState
 
-from driving_core.lane_core import LanePipeline, make_cfg, render_panels
+from driving_core.lane_core import LanePipeline, cfg_from_profile, render_panels
 from driving_core.profile import load_profile, section
 
 
@@ -39,96 +39,30 @@ class PerceptionNode(Node):
         self.declare_parameter('subscribe_topic', '/camera/image/compressed')
         self.declare_parameter('state_topic', '/lane/state')
         self.declare_parameter('debug_topic', '/lane/debug/compressed')
-        # offline-selected profile (authoritative when set); else use mode+overrides
-        self.declare_parameter('profile', '')
-        self.declare_parameter('mode', 'G1')
+        self.declare_parameter('profile', '')      # [perception] section applied
         self.declare_parameter('jpeg_quality', 80)
         self.declare_parameter('debug_scale', 2.0)
         self.declare_parameter('log_hz', 2.0)
         self.declare_parameter('publish_debug', True)
-        # per-axis overrides (sentinels mean "unset -> preset default")
-        self.declare_parameter('roi_top_frac', -1.0)
-        self.declare_parameter('split_ref', '')
-        self.declare_parameter('heading_method', '')
-        self.declare_parameter('min_aspect', -1.0)
-        self.declare_parameter('min_length', -1.0)
-        self.declare_parameter('dynamic_roi', False)
-        self.declare_parameter('per_lane_conf', False)
-        self.declare_parameter('use_median', False)
-        self.declare_parameter('do_polyfit', False)
-        self.declare_parameter('trap_top_w', -1.0)
-        self.declare_parameter('trap_bot_w', -1.0)
-        self.declare_parameter('lane_width_default', -1.0)
-        self.declare_parameter('min_contour_area', -1)
-        self.declare_parameter('morph_kernel', -1)
-        # color set: comma-separated subset of white,yellow ('' -> preset default)
-        self.declare_parameter('colors', '')
-        self.declare_parameter('yellow_h_lo', -1)
-        self.declare_parameter('yellow_h_hi', -1)
-        self.declare_parameter('yellow_s_min', -1)
-        self.declare_parameter('yellow_v_min', -1)
 
         gp = self.get_parameter
         subscribe_topic = str(gp('subscribe_topic').value)
         state_topic = str(gp('state_topic').value)
         self.debug_topic = str(gp('debug_topic').value)
-        mode = str(gp('mode').value)
         self.jpeg_quality = int(gp('jpeg_quality').value)
         self.debug_scale = float(gp('debug_scale').value)
         self.log_hz = float(gp('log_hz').value)
         self.publish_debug = bool(gp('publish_debug').value)
 
-        overrides = {}
-        if float(gp('roi_top_frac').value) >= 0:
-            overrides['roi_top_frac'] = float(gp('roi_top_frac').value)
-        if str(gp('split_ref').value):
-            overrides['split_ref'] = str(gp('split_ref').value)
-        if str(gp('heading_method').value):
-            overrides['heading_method'] = str(gp('heading_method').value)
-        if float(gp('min_aspect').value) >= 0:
-            overrides['min_aspect'] = float(gp('min_aspect').value)
-        if float(gp('min_length').value) >= 0:
-            overrides['min_length'] = float(gp('min_length').value)
-        if bool(gp('dynamic_roi').value):
-            overrides['dynamic_roi'] = True
-        if bool(gp('per_lane_conf').value):
-            overrides['per_lane_conf'] = True
-        if bool(gp('use_median').value):
-            overrides['use_median'] = True
-        if bool(gp('do_polyfit').value):
-            overrides['do_polyfit'] = True
-        if float(gp('trap_top_w').value) >= 0:
-            overrides['trap_top_w'] = float(gp('trap_top_w').value)
-        if float(gp('trap_bot_w').value) >= 0:
-            overrides['trap_bot_w'] = float(gp('trap_bot_w').value)
-        if float(gp('lane_width_default').value) >= 0:
-            overrides['lane_width_default'] = float(gp('lane_width_default').value)
-        if int(gp('min_contour_area').value) >= 0:
-            overrides['min_contour_area'] = int(gp('min_contour_area').value)
-        if int(gp('morph_kernel').value) >= 0:
-            overrides['morph_kernel'] = int(gp('morph_kernel').value)
-        colors_p = str(gp('colors').value).strip()
-        if colors_p:
-            overrides['colors'] = tuple(x.strip() for x in colors_p.split(',') if x.strip())
-        if int(gp('yellow_h_lo').value) >= 0:
-            overrides['yellow_h_lo'] = int(gp('yellow_h_lo').value)
-        if int(gp('yellow_h_hi').value) >= 0:
-            overrides['yellow_h_hi'] = int(gp('yellow_h_hi').value)
-        if int(gp('yellow_s_min').value) >= 0:
-            overrides['yellow_s_min'] = int(gp('yellow_s_min').value)
-        if int(gp('yellow_v_min').value) >= 0:
-            overrides['yellow_v_min'] = int(gp('yellow_v_min').value)
-
-        # A profile (offline-selected) is authoritative: it replaces mode +
-        # per-axis overrides so the car runs exactly what offline picked.
+        # One confirmed perception pipeline; the profile [perception] section
+        # supplies all tuning. (Experiment presets/mode/per-axis overrides removed;
+        # live tuning via ROS param callbacks comes in the tuning phase.)
         profile_path = os.path.expanduser(str(gp('profile').value))
         if profile_path:
-            psec = section(load_profile(profile_path), 'perception')
-            mode = str(psec.pop('mode', mode))
-            overrides = psec
+            self.cfg = cfg_from_profile(section(load_profile(profile_path), 'perception'))
             self.get_logger().info(f'perception: loaded profile {profile_path}')
-
-        self.cfg = make_cfg(mode, **overrides)
+        else:
+            self.cfg = cfg_from_profile()
         self.pipeline = LanePipeline(self.cfg)
 
         image_qos = QoSProfile(
@@ -145,7 +79,7 @@ class PerceptionNode(Node):
 
         self.get_logger().info(
             f'perception_node: sub={subscribe_topic} state={state_topic} '
-            f'debug={self.debug_topic} mode={self.cfg.name} overrides={overrides} '
+            f'debug={self.debug_topic} cfg={self.cfg.name} '
             '(perception-only; publishes LaneState, never /control)'
         )
 
