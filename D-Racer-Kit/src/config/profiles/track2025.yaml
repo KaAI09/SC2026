@@ -1,22 +1,17 @@
 # Driving profile — 2025 test track (yellow-tape shortcut + roundabout).
 #
-# Single offline -> online contract: the perception mode/params and controller/
-# gains the offline evaluation selected for this track. offline/control_select.py
-# writes [control]. Perception online now runs the 7-label logic ported from
-# offline/lane7_probe.py into driving_core.lane_core (detect -> sliding-window
-# multi-lane -> 7-label -> ego corridor centerline), FRONT-VIEW: the probe's
-# uncalibrated ROI-trapezoid warp is dropped. A camera-calibrated BEV is a later
-# stage (warp masks before the sliding window). [perception] keys are hand-tuned.
-# perception_node and driving_node load this one file via the `profile` parameter
-# instead of many separate ROS params.
+# Single offline -> online contract. offline/control_select.py writes [control].
+# Online perception runs the confirmed sliding-window pipeline (front-view);
+# [perception] keys are hand-tuned or set live via `ros2 param set
+# /perception_node <field>`. perception_node and control_node load this one file
+# via the `profile` parameter.
 #
-# Keys map 1:1 to driving_core.lane_core.Cfg (perception) and
-# driving_core.control_core.CtrlCfg (control). Unspecified keys use presets.
+# Keys map 1:1 to dracer_core.perception_core.Cfg (perception) and
+# dracer_core.control_core.CtrlCfg (control). Unknown keys are ignored.
 name: track2025
 
 perception:
-  mode: G5                 # white+yellow fused (lane7 front-view; calibrated BEV deferred)
-  colors: [white, yellow]
+  colors: [white, yellow]  # white+yellow fused (front-view; calibrated BEV deferred)
   roi_top_frac: 0.30       # 2025 dashcam heatmap (yellow/roundabout keeps more height)
   trap_top_w: 0.80
   yellow_h_lo: 18          # 2025 dashcam measured band (H 22-32, S>=66, V>=112)
@@ -26,10 +21,10 @@ perception:
 
 control:
   controller: C2           # PD baseline
-  kp: 0.5
+  kp: 0.7
   kd: 0.1
   center_target: 0.0
-  steer_max: 0.8
+  steer_max: 0.9
   steer_sign: 1.0
   slew_rate: 0.15
   throttle_base: 0.20
