@@ -51,4 +51,4 @@ control:     { controller: C2, kp: 0.5, ... }               # control_select가 
 ```
 
 profile YAML은 git 추적 → git으로 D3-G에 전달. 녹화(mp4/csv)는 미추적 → scp.
-상세 흐름은 [../Track test command.md](../Track%20test%20command.md).
+상세 흐름은 [../Task command.md](../Task%20command.md).
