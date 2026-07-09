@@ -142,7 +142,10 @@ class ControlNode(Node):
         if self.e_stop_active or self.use_joystick_control:
             return
 
-        self.steering = float(msg.steering)
+        # The autonomous command is symmetric about 0 (0 = straight). Add the servo
+        # trim so 0 maps to mechanical-straight, matching manual mode (which sends
+        # axis + trim); otherwise every command sits STEER_TRIM off center. Clamp.
+        self.steering = max(-1.0, min(1.0, float(msg.steering) + self.steer_trim))
         self.throttle = float(msg.throttle)
         self.last_control_time = self.get_clock().now()
 

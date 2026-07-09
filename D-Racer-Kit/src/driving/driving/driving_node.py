@@ -27,12 +27,21 @@ import os
 
 import rclpy
 from rclpy.node import Node
+from rclpy.parameter import Parameter
+from rcl_interfaces.msg import SetParametersResult
 from control_msgs.msg import Control
 from joystick_msgs.msg import Joystick
 from lane_msgs.msg import LaneState
 
 from driving_core.control_core import Controller, make_ctrl
 from driving_core.profile import load_profile, section
+
+
+# CtrlCfg fields exposed as live-tunable ROS params (rebuilt on `ros2 param set`).
+_CTRL_FLOATS = ('kp', 'kd', 'ki', 'center_target', 'steer_max', 'steer_sign',
+                'slew_rate', 'out_ema', 'throttle_base', 'throttle_min',
+                'curv_slow', 'conf_gate')
+_CTRL_PARAMS = ('controller',) + _CTRL_FLOATS
 
 
 def _num(v, valid):
@@ -75,25 +84,15 @@ class DrivingNode(Node):
         control_topic = str(gp('control_topic').value)
         self.publish_rate = float(gp('publish_rate').value)
 
-        ctrl_name = str(gp('controller').value)
-        ctrl_kw = dict(
-            kp=float(gp('kp').value), kd=float(gp('kd').value), ki=float(gp('ki').value),
-            center_target=float(gp('center_target').value),
-            steer_max=float(gp('steer_max').value), steer_sign=float(gp('steer_sign').value),
-            slew_rate=float(gp('slew_rate').value), out_ema=float(gp('out_ema').value),
-            throttle_base=float(gp('throttle_base').value),
-            throttle_min=float(gp('throttle_min').value),
-            curv_slow=float(gp('curv_slow').value), conf_gate=float(gp('conf_gate').value),
-        )
-        # profile (offline-selected) overrides the fields it specifies
+        # profile (offline-selected) -> push into the ROS params so params are the
+        # single source of truth; then live `ros2 param set` tuning stays correct.
         profile_path = os.path.expanduser(str(gp('profile').value))
         if profile_path:
-            csec = section(load_profile(profile_path), 'control')
-            ctrl_name = str(csec.pop('controller', ctrl_name))
-            ctrl_kw.update(csec)
+            self._apply_profile_params(section(load_profile(profile_path), 'control'))
             self.get_logger().info(f'driving: loaded profile {profile_path}')
-        self.controller = Controller(make_ctrl(ctrl_name, **ctrl_kw))
-        self.conf_gate = float(ctrl_kw['conf_gate'])
+        self.controller, self.conf_gate = self._build_controller()
+        # live tuning: rebuild the controller whenever a control param is set
+        self.add_on_set_parameters_callback(self._on_set_params)
 
         # state
         self.e_stop = False
@@ -112,6 +111,37 @@ class DrivingNode(Node):
             f'controller={gp("controller").value} '
             f'throttle_base={gp("throttle_base").value} steer_max={gp("steer_max").value}'
         )
+
+    # ---- control params (profile load + live tuning) ---------------------
+    def _apply_profile_params(self, csec):
+        """Push a profile [control] section into the declared ROS params."""
+        updates = []
+        for k, v in csec.items():
+            if k == 'controller':
+                updates.append(Parameter('controller', Parameter.Type.STRING, str(v)))
+            elif k in _CTRL_FLOATS:
+                updates.append(Parameter(k, Parameter.Type.DOUBLE, float(v)))
+        if updates:
+            self.set_parameters(updates)
+
+    def _build_controller(self, overrides=None):
+        """Build the Controller from current param values (with optional pending
+        overrides applied on top, for the pre-set callback)."""
+        ov = overrides or {}
+        gp = self.get_parameter
+
+        def val(name):
+            return ov[name] if name in ov else gp(name).value
+        kw = {k: float(val(k)) for k in _CTRL_FLOATS}
+        return Controller(make_ctrl(str(val('controller')), **kw)), kw['conf_gate']
+
+    def _on_set_params(self, params):
+        """Live: rebuild the controller when any control param is set."""
+        if any(p.name in _CTRL_PARAMS for p in params):
+            ov = {p.name: p.value for p in params if p.name in _CTRL_PARAMS}
+            self.controller, self.conf_gate = self._build_controller(ov)
+            self.get_logger().info(f'control live-update: {ov}')
+        return SetParametersResult(successful=True)
 
     # ---- inputs -----------------------------------------------------------
     def joystick_callback(self, msg: Joystick):
