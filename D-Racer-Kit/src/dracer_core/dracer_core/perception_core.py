@@ -86,13 +86,30 @@ class Cfg:
     lane_width_default: float = 0.5
     jump_max: float = 120.0
     lost_reset: int = 8
+    track_width_tol: float = 0.25   # Tracker: accept a width MEASUREMENT only within this
+                                    # fraction of lane_width_cm. <= 0 accepts anything, which
+                                    # is the pre-0712 behaviour. Deliberately NOT the same
+                                    # knob as `pair_width_tol` (which gates lane_centers'
+                                    # pairing): turning one off must not turn the other off.
     # scalar output stabilizer (smooths center_error + names the failsafe state)
     ema_alpha: float = 0.4
     outlier_jump: float = 0.5
-    outlier_relatch: int = 6     # consecutive rejections -> believe the new value, re-seed.
+    outlier_relatch: int = 5     # consecutive rejections -> believe the new value, re-seed.
                                  # Without it `outlier_jump` latches forever (see _Stabilizer).
-                                 # 6 @30Hz = 0.2s: still swallows any spike, but a real
-                                 # corridor flip is acted on in a fifth of a second.
+                                 #
+                                 # This is a FRAME count, so it is really a time window that
+                                 # stretches when perception slows: 0.17s @30Hz, 0.25s @20Hz.
+                                 # It bounds how long the car can steer on a stale (and, after
+                                 # a corridor flip, WRONG-SIGNED) value, so it must be sized
+                                 # for the SLOWEST rate we would still drive at, not the fastest.
+                                 #
+                                 # 5, measured on the 0711 raw (relatch 6 -> 5 -> 4):
+                                 #   145617  OUTLIER 3.5% -> 2.8%,  max EMA freeze 5 -> 4 fr,
+                                 #           |ema - truth| mean .063 -> .058, p95 .145 -> .137
+                                 #   145515  identical (its bursts top out at 3 fr, below both)
+                                 #   4 crosses the line: it relatches on one of 145515's
+                                 #   3-frame transients -- believing a disagreement that was
+                                 #   about to resolve itself. That is the spike defence going.
     use_median: bool = False
     median_window: int = 5
     conf_low: float = 0.25
@@ -505,12 +522,52 @@ def ego_center(centers, lanes, w, width, mL=None, mR=None):
 # E: tracker (ego L/R persistence + lane-width coast + turn)
 # ==========================================================================
 class Tracker:
-    def __init__(self, c, h, w):
+    def __init__(self, c, h, w, lane_w_px=0.0):
         self.c = c
         self.h, self.w = h, w
+        self.lane_w_px = float(lane_w_px)     # 0 = front-view: no physical width to check
         self.L = self.R = self.width = None
         self.lost = 0
         self.turn = 1
+
+    def _measure_width(self, mL, mR):
+        """Corridor width over the COMMON OBSERVED span, as a median. Never extrapolated.
+
+        The old measurement read both parabolas at y = h-1 -- the very bottom BEV row, 26cm.
+        The lanes are almost never detected down there: the near field is outside this lens's
+        lateral FOV, which is the entire reason `coast` exists. So it evaluated two 2nd-order
+        fits well past the data that constrained them, took their difference, and fed that
+        into the width EMA. On a curve the extrapolation error of two fits does not cancel --
+        it compounds.
+        """
+        ylo = max(float(mL['ys'].min()), float(mR['ys'].min()))
+        yhi = min(float(mL['ys'].max()), float(mR['ys'].max()))
+        if yhi - ylo < 1.0:
+            return None                        # no shared span -> no measurement
+        vs = np.linspace(ylo, yhi, 7)
+        gaps = _ebottom(mR['coeffs'], vs) - _ebottom(mL['coeffs'], vs)
+        wdt = float(np.median(gaps))           # median, so one bad end cannot drag it
+        return wdt if wdt > 0 else None        # a negative "width" is not a width
+
+    def _width_ok(self, wdt):
+        """The corridor width is a PHYSICAL fact, not something to learn from whatever pair
+        the tracker happened to grab this frame.
+
+        `lane_centers` already refuses a pair that is not a lane width apart (`pair_width_tol`).
+        The tracker did not -- it took ANY mL/mR it matched and wrote their gap into the width
+        EMA. A stop-line fragment, or the far boundary of the NEXT corridor, poisons it. And
+        `self.width` is precisely what every coast frame shifts the centreline by, so a bad
+        width does not surface as LOST, or as low confidence, or in any log. It surfaces as
+        the car steering confidently to the wrong place.
+
+        Rejecting a measurement is safe: the fallback is `lane_width_default`, which
+        `cfg_to_px` sets to the real, physically measured lane width.
+
+        `track_width_tol <= 0` restores the pre-0712 "accept anything" behaviour (ROLLBACK.md).
+        """
+        if self.lane_w_px <= 0 or self.c.track_width_tol <= 0:
+            return True
+        return abs(wdt - self.lane_w_px) <= self.c.track_width_tol * self.lane_w_px
 
     def _pick(self, cands, tracked, want_side):
         cands = [x for x in cands if x['coeffs'] is not None]
@@ -537,14 +594,17 @@ class Tracker:
         Lc = [x for x in drive if x['x_bottom'] < self.w / 2]
         Rc = [x for x in drive if x['x_bottom'] >= self.w / 2]
         mL, mR = self._pick(Lc, self.L, 'L'), self._pick(Rc, self.R, 'R')
-        yb = self.h - 1
         gL, gR = mL is not None, mR is not None
-        width = self.width if self.width is not None else self.c.lane_width_default * self.w
+        # `is not None` let a non-positive width through; the coast shift then moves the
+        # synthesised boundary the WRONG WAY.
+        width = (self.width if (self.width is not None and self.width > 0)
+                 else self.c.lane_width_default * self.w)
         if gL and gR:
             self.L = self._ema(self.L, mL['coeffs'])
             self.R = self._ema(self.R, mR['coeffs'])
-            wdt = _ebottom(mR['coeffs'], yb) - _ebottom(mL['coeffs'], yb)
-            self.width = wdt if self.width is None else 0.6 * self.width + 0.4 * wdt
+            wdt = self._measure_width(mL, mR)
+            if wdt is not None and self._width_ok(wdt):
+                self.width = wdt if self.width is None else 0.6 * self.width + 0.4 * wdt
             self.lost = 0
         elif gL:
             self.L = self._ema(self.L, mL['coeffs'])
@@ -700,7 +760,7 @@ class LanePipeline:
             lane_w_px = 0.0                   # no physical gate in the front view
         if self._size != (h, w):
             self._size = (h, w)
-            self.trk = Tracker(c, h, w)
+            self.trk = Tracker(c, h, w, lane_w_px)
 
         windows = []
         lanes = (sliding_window_lanes(mw, 'W', c, windows) +
@@ -708,7 +768,9 @@ class LanePipeline:
         mL, mR = self.trk.update(lanes)
 
         centers = lane_centers(lanes, w, h, c, lane_w_px)
-        width = self.trk.width if self.trk.width else c.lane_width_default * w
+        # `if self.trk.width` was the test, and a NEGATIVE width is truthy -- it would sail
+        # straight through into `ego_center`, which then returns None on `width <= 0`.
+        width = self.trk.width if (self.trk.width and self.trk.width > 0) else c.lane_width_default * w
         ec = ego_center(centers, lanes, w, width, mL, mR)
 
         if ec is not None:

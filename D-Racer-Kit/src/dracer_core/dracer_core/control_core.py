@@ -68,8 +68,16 @@ class CtrlCfg:
     # --- vehicle / output shaping (VEHICLE dependent) ---
     steer_max: float = 1.0
     steer_sign: float = 1.0        # flip to -1.0 if steering wiring is reversed
-    slew_rate: float = 0.0         # max |delta steering| per step (0 = off)
+    slew_rate_per_sec: float = 0.0    # max |d(steering)|/dt, PER SECOND (0 = off).
+                                      # Was `slew_rate`, a per-STEP limit -- which silently
+                                      # made the car's steering authority a function of the
+                                      # perception frame rate. See `step()`.
     out_ema: float = 0.0           # smoothing on the output command (0 = off)
+    dt_max: float = 0.1            # dt is clamped to this before it scales anything.
+                                   # The frame after a perception dropout carries a dt of
+                                   # the whole gap; without a cap it would buy a slew
+                                   # allowance big enough to make the limiter a no-op
+                                   # exactly once -- on the least trustworthy frame there is.
 
     # --- throttle policy (VEHICLE + TRACK dependent) ---
     throttle_base: float = 0.18
@@ -142,8 +150,14 @@ class Controller:
             # no lane -> keep last steering, coast slow (safety layer decides more)
             return self._emit(self.prev_u), c.throttle_min, {'gated': 'no_center'}
 
+        # dt drives BOTH the derivative and the slew limit, and both are wrong on the
+        # first frame after a gap: the derivative divides by it (harmless -- a big dt
+        # shrinks de) and the slew limit MULTIPLIES by it (not harmless -- a 0.3s gap
+        # would grant a 1.35 allowance and let the command jump anywhere it likes).
+        dt_s = min(max(dt, 0.0), c.dt_max)
+
         e = center - c.center_target
-        de = 0.0 if (self.prev_e is None or dt <= 0) else (e - self.prev_e) / dt
+        de = 0.0 if (self.prev_e is None or dt_s <= 0) else (e - self.prev_e) / dt_s
         self.prev_e = e
         heading = math.radians(st.get('heading') or 0.0)
         speed = max(1e-3, float(st.get('speed', c.throttle_base)))
@@ -153,7 +167,7 @@ class Controller:
         elif c.controller == 'PD':
             u = -(c.kp * e + c.kd * de)
         elif c.controller == 'PID':
-            self.integ = clamp(self.integ + e * dt, -c.i_clamp, c.i_clamp)
+            self.integ = clamp(self.integ + e * dt_s, -c.i_clamp, c.i_clamp)
             u = -(c.kp * e + c.kd * de + c.ki * self.integ)
         elif c.controller == 'PURE_PURSUIT':
             # lateral offset of the lane at the lookahead, projected via heading;
@@ -174,8 +188,23 @@ class Controller:
         # Saturation / slew / smoothing all act on the INTERNAL command, so they stay
         # symmetric and `steer_sign` never enters the state. Emitted once, at the bottom.
         u = clamp(u, -c.steer_max, c.steer_max)
-        if c.slew_rate > 0:
-            u = clamp(u, self.prev_u - c.slew_rate, self.prev_u + c.slew_rate)
+        if c.slew_rate_per_sec > 0 and dt_s > 0:
+            # PER SECOND, not per callback. The old per-step limit meant the car's maximum
+            # turn rate was whatever the perception frame rate happened to be that day:
+            #
+            #     0.15/step @ 10.7Hz = 1.6 /s      (full swing 1.0s)
+            #     0.15/step @ 30Hz   = 4.5 /s      (full swing 0.36s)   <- 2.8x, silently
+            #
+            # Raising the camera rate made the steering nearly three times more agile with
+            # no line of code saying so, and the kp 0.35 -> 0.45 retune that followed was
+            # layered on top of that unlogged change. Worse is the other direction: if
+            # perception ever DROPS to 20Hz, a per-step limit quietly cuts the car's turn
+            # rate to 3.0/s -- it physically cannot corner as hard as the run that passed.
+            #
+            # 4.5/s is exactly what the 0711 completion runs realised at 30Hz. Pinning the
+            # PHYSICAL rate reproduces that car at any frame rate.
+            slew = c.slew_rate_per_sec * dt_s
+            u = clamp(u, self.prev_u - slew, self.prev_u + slew)
         if c.out_ema > 0:
             u = c.out_ema * self.prev_u + (1.0 - c.out_ema) * u
         self.prev_u = u

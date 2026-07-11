@@ -65,8 +65,8 @@ from dracer_core.profile import load_profile, section
 
 # CtrlCfg fields exposed as live-tunable ROS params (rebuilt on `ros2 param set`).
 _CTRL_FLOATS = ('kp', 'kd', 'ki', 'center_target', 'steer_max', 'steer_sign',
-                'slew_rate', 'out_ema', 'throttle_base', 'throttle_min',
-                'curv_slow', 'conf_gate', 'throttle_outlier')
+                'slew_rate_per_sec', 'out_ema', 'throttle_base', 'throttle_min',
+                'curv_slow', 'conf_gate', 'throttle_outlier', 'dt_max')
 _CTRL_PARAMS = ('controller',) + _CTRL_FLOATS
 
 
@@ -85,7 +85,13 @@ class ControlNode(Node):
         p('state_topic', '/lane/state')
         p('joystick_topic', 'joystick')
         p('control_topic', '/control')
-        p('publish_rate', 20.0)
+        # >= the fastest perception can run. At 20Hz this timer sampled a `latest_cmd` that
+        # perception was rewriting at 30Hz: a third of every command computed was overwritten
+        # before it was ever published, and the two free-running clocks beat against each
+        # other so the effective delay wandered. Publishing FASTER than perception costs
+        # nothing -- an unchanged value is simply republished -- so the rate should track the
+        # ceiling, not the average.
+        p('publish_rate', 30.0)
         p('engage', False)
         # Perception dead-man. 0.25s = ~8 frames at the 30Hz perception runs at; a gap that
         # long is already an anomaly, not jitter (measured worst gap over the 0711 runs:
@@ -109,9 +115,10 @@ class ControlNode(Node):
         p('kd', 0.1)
         p('ki', 0.0)
         p('center_target', 0.0)
-        p('steer_max', 0.8)
+        p('steer_max', 0.7)   # = 1.0 - |STEER_TRIM|; above this the actuator's trim clips
         p('steer_sign', 1.0)
-        p('slew_rate', 0.15)
+        p('slew_rate_per_sec', 4.5)   # = the old 0.15/step at the 30Hz the 0711 runs hit
+        p('dt_max', 0.1)
         p('out_ema', 0.0)
         p('throttle_base', 0.13)
         p('throttle_min', 0.0)

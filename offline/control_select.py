@@ -64,7 +64,7 @@ def control_section(ctrl):
     c = make_ctrl(ctrl)
     return {'controller': ctrl, 'kp': c.kp, 'kd': c.kd, 'ki': c.ki,
             'center_target': c.center_target, 'steer_max': c.steer_max,
-            'steer_sign': c.steer_sign, 'slew_rate': c.slew_rate,
+            'steer_sign': c.steer_sign, 'slew_rate_per_sec': c.slew_rate_per_sec,
             'throttle_base': c.throttle_base, 'throttle_min': c.throttle_min,
             'conf_gate': c.conf_gate}
 

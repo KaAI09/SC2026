@@ -31,6 +31,8 @@ def generate_launch_description():
     camera = LaunchConfiguration('camera')
     record_dir = LaunchConfiguration('record_dir')
     engage = LaunchConfiguration('engage')
+    command_hz = LaunchConfiguration('command_hz')
+    publish_rate = LaunchConfiguration('publish_rate')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -44,6 +46,18 @@ def generate_launch_description():
         DeclareLaunchArgument('engage', default_value='false',
                               description='start autonomously actuating (keep false; '
                                           'set true only after wheels-off checks)'),
+        # Both rates are launch args, NOT constants, because they are set once at node
+        # construction (each creates a timer) and so cannot be walked back with `ros2 param
+        # set` on a running car. The 0711 values were command_hz=10 / publish_rate=20 --
+        # see ROLLBACK.md to restore the whole validated configuration.
+        DeclareLaunchArgument('command_hz', default_value='30.0',
+                              description='actuator servo write rate (0711 value: 10.0). '
+                                          'Gates E-STOP / watchdog latency. Ceiling is the '
+                                          '50Hz PWM.'),
+        DeclareLaunchArgument('publish_rate', default_value='30.0',
+                              description='control_node /control rate (0711 value: 20.0). '
+                                          'Should be >= the perception rate or commands are '
+                                          'dropped.'),
         *base_nodes(
             vehicle_config,
             calibration_mode=False,
@@ -52,6 +66,7 @@ def generate_launch_description():
             # forces perception to composite + JPEG-encode a 4-panel strip on the hot path;
             # the monitor only needs to show the driver the road.
             image_topic='/camera/image/compressed',
+            command_hz=ParameterValue(command_hz, value_type=float),
         ),
         Node(
             package='perception', executable='perception_node', name='perception_node',
@@ -62,6 +77,7 @@ def generate_launch_description():
             package='control', executable='control_node', name='control_node',
             output='screen',
             parameters=[{'profile': profile,
+                         'publish_rate': ParameterValue(publish_rate, value_type=float),
                          'engage': ParameterValue(engage, value_type=bool)}],
         ),
         # Record the RAW camera + the LaneState csv, NOT the annotated panel. Together they

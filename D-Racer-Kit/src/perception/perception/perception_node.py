@@ -126,6 +126,16 @@ class PerceptionNode(Node):
 
         self._last_log = self.get_clock().now()
         self._log_period = 1.0 / self.log_hz if self.log_hz > 0 else 0.0
+        # Achieved rate. Nothing measured this, so a slowdown was invisible -- and the rate
+        # is not cosmetic: control's `dt` comes from these stamps, and several perception
+        # thresholds (outlier_relatch, lost_stop_frames, lost_reset) are FRAME counts whose
+        # real duration stretches as the rate falls. The 0711 runs held 30.0Hz with a worst
+        # gap of 38ms over 1502 frames and zero drops; anything materially under that is a
+        # different machine from the one the gains were tuned on, and you should hear about it.
+        self._rate_floor = float(self.declare_parameter('rate_floor_hz', 24.0).value)
+        self._t_prev = None
+        self._dt_ema = None
+        self._slow_since = None
 
         self.get_logger().info(
             f'perception_node: sub={subscribe_topic} state={state_topic} '
@@ -198,7 +208,34 @@ class PerceptionNode(Node):
         else:
             state = self.pipeline.process(frame)
             self._publish_state(state, msg.header.stamp)
+        self._track_rate()
         self._maybe_log(state)
+
+    def _track_rate(self):
+        """Measure the achieved perception rate and complain if it sags."""
+        now = self.get_clock().now()
+        if self._t_prev is not None:
+            dt = (now - self._t_prev).nanoseconds / 1e9
+            if 0.0 < dt < 1.0:
+                self._dt_ema = dt if self._dt_ema is None else 0.9 * self._dt_ema + 0.1 * dt
+        self._t_prev = now
+        if self._dt_ema is None or self._rate_floor <= 0.0:
+            return
+        hz = 1.0 / self._dt_ema
+        if hz < self._rate_floor:
+            if self._slow_since is None:
+                self._slow_since = now
+                self.get_logger().warning(
+                    f'perception {hz:.1f}Hz < rate_floor {self._rate_floor:.0f}Hz. '
+                    '제어 게인(kp 0.45)과 프레임 단위 문턱값(outlier_relatch)은 30Hz 에서 '
+                    '검증된 값이다 — 이 속도에서는 검증 밖이다.')
+        elif self._slow_since is not None:
+            self._slow_since = None
+            self.get_logger().info(f'perception rate recovered: {hz:.1f}Hz')
+
+    @property
+    def rate_hz(self):
+        return 0.0 if not self._dt_ema else 1.0 / self._dt_ema
 
     def _publish_state(self, s, stamp):
         m = LaneState()
@@ -244,7 +281,8 @@ class PerceptionNode(Node):
         def f(v):
             return f'{v:+.2f}' if isinstance(v, (int, float)) else 'n/a'
         self.get_logger().info(
-            f"[lane] state={s['state']} center={f(s['center_error'])} ema={f(s['ema'])} "
+            f"[lane] {self.rate_hz:4.1f}Hz state={s['state']} center={f(s['center_error'])} "
+            f"ema={f(s['ema'])} "
             f"heading={f(s['heading'])}[{s['heading_label']}] conf={s['confidence']:.2f} "
             f"L/R={s['left_conf']:.2f}/{s['right_conf']:.2f}"
             + (' FALLBACK' if s['used_fallback'] else '')

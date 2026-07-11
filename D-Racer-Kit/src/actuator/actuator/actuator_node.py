@@ -145,7 +145,21 @@ class ActuatorNode(Node):
         # The autonomous command is symmetric about 0 (0 = straight). Add the servo
         # trim so 0 maps to mechanical-straight, matching manual mode (which sends
         # axis + trim); otherwise every command sits STEER_TRIM off center. Clamp.
-        self.steering = max(-1.0, min(1.0, float(msg.steering) + self.steer_trim))
+        raw = float(msg.steering) + self.steer_trim
+        self.steering = max(-1.0, min(1.0, raw))
+        # The command and the trim share ONE [-1, 1] servo budget, so a controller whose
+        # steer_max exceeds 1 - |trim| loses authority on one side only, and loses it
+        # silently: the servo just stops moving while the controller keeps asking for more.
+        # That reads as a one-sided understeer and sends you hunting through the gains.
+        # control_node's steer_max is set to 1 - |STEER_TRIM| for exactly this reason; if
+        # that ever drifts, say so rather than clipping in the dark.
+        if abs(raw - self.steering) > 1e-6:
+            self.get_logger().warning(
+                f'steering saturated: {raw:+.3f} -> {self.steering:+.3f} '
+                f'(cmd {msg.steering:+.3f} + trim {self.steer_trim:+.3f}). '
+                f'steer_max 를 {1.0 - abs(self.steer_trim):.2f} 이하로 낮춰라 — '
+                '지금 한쪽 조향 권한만 깎이고 있다.',
+                throttle_duration_sec=2.0)
         self.throttle = float(msg.throttle)
         self.last_control_time = self.get_clock().now()
 

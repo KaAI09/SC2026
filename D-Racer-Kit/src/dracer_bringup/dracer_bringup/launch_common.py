@@ -51,7 +51,8 @@ def default_record_dir():
     return str(Path.home() / 'recorder')
 
 
-def base_nodes(vehicle_config, *, calibration_mode, use_joystick_control, image_topic):
+def base_nodes(vehicle_config, *, calibration_mode, use_joystick_control, image_topic,
+               command_hz=30.0):
     """Nodes common to every pipeline launch.
 
     - camera    : publishes /camera/image/compressed
@@ -59,14 +60,26 @@ def base_nodes(vehicle_config, *, calibration_mode, use_joystick_control, image_
     - joystick  : /joystick (calibration_mode enables trim/accel edits)
     - monitor   : web dashboard (:5000), streams `image_topic` low-latency
     - battery   : /battery_status (feeds the monitor battery panel)
+
+    `command_hz` is a LAUNCH ARGUMENT (not baked in) so the pre-0712 rate can be restored
+    on the board without a rebuild -- see ROLLBACK.md.
     """
     return [
         Node(package='camera', executable='camera_node', name='camera_node',
              output='screen',
              parameters=[{'vehicle_config_file': vehicle_config}]),
+        # command_hz 30 (the actuator node's own default is still 10). The actuator timer is
+        # a stateless zero-order hold -- it just re-writes the latest /control to the servo --
+        # so its rate is NOT coupled to perception's: a slow input simply gets written more
+        # than once, which is identical to writing it once. What the rate DOES gate is every
+        # safety path, because E-STOP, the /control dead-man and the neutral fallback all
+        # reach the servo only on this tick. At 10Hz an E-STOP took up to 100ms to arrive.
+        # The PCA9685 runs a 50Hz PWM, so 50 is the physical ceiling (the servo cannot consume
+        # a new pulse width faster than one per period); 30 sits under it at ~7% I2C load.
         Node(package='actuator', executable='actuator_node', name='actuator_node',
              output='screen',
              parameters=[{'use_joystick_control': use_joystick_control,
+                          'command_hz': command_hz,
                           'vehicle_config_file': vehicle_config}]),
         Node(package='joystick', executable='joystick_node', name='joystick_node',
              output='screen',
