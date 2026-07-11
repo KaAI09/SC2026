@@ -82,6 +82,20 @@ class Cfg:
     # pairing (adjacent left/right boundary -> centerline)
     pair_overlap_min: float = 0.30
     pair_gap_min: float = 12.0
+    ego_tol: float = 0.6         # a corridor is the EGO corridor if its centreline sits within
+                                 # this many lane widths of the vehicle axis. 0.5 = "the axis is
+                                 # strictly inside it"; 0.6 leaves slack for a car running wide.
+                                 # Replaces the straddle test `a.x_bottom < cx <= b.x_bottom`,
+                                 # which is a screen-space question, not a physical one.
+                                 #
+                                 # Sized to MEAN something. 0.75 x a 39cm tracked width is 29cm,
+                                 # and the BEV half-width is 29cm -- i.e. every corridor in the
+                                 # frame passes and the gate is decorative. 0.6 x 39 = 23cm, so
+                                 # the corridor one lane over (centre ~35cm away) is refused.
+                                 # Measured identical to 0.5/0.75 on the 0711 runs (the nearest-
+                                 # corridor pick and `adopt` already get it right); this is for
+                                 # the 4-lane roundabout, where several corridors are visible and
+                                 # picking the wrong one is a lane change nobody asked for.
     # E: tracker (ego L/R persistence + width coast)
     lane_width_default: float = 0.5
     jump_max: float = 120.0
@@ -456,41 +470,71 @@ def _pair_gate(a, b, h, c, lane_w_px=0.0):
     return ylo, yhi
 
 
-def lane_centers(lanes, w, h, c, lane_w_px=0.0):
-    cx = w / 2.0
+def lane_centers(lanes, w, h, c, lane_w_px=0.0, axis=None):
+    """Every physically plausible corridor in the frame. Which one is OURS is `ego_center`'s
+    job, not this function's.
+
+    Two gates dropped here, both screen-space leftovers:
+
+    `_side(a) == _side(b) -> skip` required one boundary left of the image centre and the
+    other right of it. Run wide, or take a curve, and BOTH boundaries of the corridor you are
+    actually in land on one side -- so the corridor you are IN got thrown away and perception
+    fell back to a single-lane coast while looking straight at both of its boundaries.
+
+    `ego = a.x_bottom < cx <= b.x_bottom` asked the same screen-space question again. Note it
+    compared two `x_bottom` values that are not even evaluated at the same row (each is at its
+    own instance's lowest observed row), against a centre column that is only the vehicle axis
+    by coincidence.
+
+    What is left is physics: `_pair_gate` already demands the pair be a real lane width apart
+    (`pair_width_tol`), which is a question only a metric BEV can ask -- and it is a far
+    stronger test than "on opposite sides of the screen" ever was.
+    """
+    cx = w / 2.0 if axis is None else float(axis)
     ls = sorted([x for x in lanes if x['coeffs'] is not None],
                 key=lambda x: x['x_bottom'])
     out = []
     for a, b in zip(ls, ls[1:]):
-        if _side(a, w) == _side(b, w):
-            continue
         ov = _pair_gate(a, b, h, c, lane_w_px)
         if ov is None:
             continue
         ylo, yhi = ov
         coeffs = tuple((p + q) / 2.0 for p, q in zip(a['coeffs'], b['coeffs']))
         x_bottom = float(_ebottom(coeffs, yhi))
-        ego = a['x_bottom'] < cx <= b['x_bottom']
         out.append({'coeffs': coeffs, 'x_bottom': x_bottom, 'offset': x_bottom - cx,
-                    'ego': ego, 'a': a, 'b': b, 'y_lo': ylo, 'y_hi': yhi})
+                    'ego': False, 'a': a, 'b': b, 'y_lo': ylo, 'y_hi': yhi})
     return out
 
 
-def ego_center(centers, lanes, w, width, mL=None, mR=None):
+def ego_center(centers, lanes, w, width, mL=None, mR=None, axis=None, c=None):
     """Ego corridor centreline: a real left/right pair, else COAST off one boundary.
 
-    `mL`/`mR` are the Tracker's picks for this frame. Prefer them for the coast side:
-    the Tracker carries the left/right identity ACROSS frames (it matches against the
-    lane it tracked last frame), whereas deciding the side afresh from `x_bottom < cx`
-    flips as soon as a curving lane crosses the image centre — and a flip inverts the
-    shift, so the centreline jumps to the WRONG SIDE of the car. That is what produced
-    the sign reversals: 96 of them, 80% while coasting, and the steering command pointed
-    INTO the lane instead of away from it (§6c/§6e, §7.4 f250).
+    `mL`/`mR` are the Tracker's picks for this frame. Prefer them EVERYWHERE — for choosing
+    which corridor is ours, and for the coast side. The Tracker carries the left/right
+    identity ACROSS frames (it matches against the lane it tracked last frame), whereas
+    deciding the side afresh from `x_bottom < cx` flips as soon as a curving lane crosses the
+    image centre — and a flip inverts the shift, so the centreline jumps to the WRONG SIDE of
+    the car. That is what produced the sign reversals: 96 of them, 80% while coasting, and the
+    steering command pointed INTO the lane instead of away from it (§6c/§6e, §7.4 f250).
     """
-    for cc in centers:
-        if cc['ego']:
-            return cc
-    cx = w / 2.0
+    cx = w / 2.0 if axis is None else float(axis)
+    ego_tol = (c.ego_tol if c is not None else 0.75)
+
+    # 1. The corridor bounded by the two lanes the TRACKER is following. Unambiguous, and it
+    #    needs no geometry at all: identity across frames beats any single frame's layout.
+    if mL is not None and mR is not None:
+        for cc in centers:
+            if cc['a'] is mL and cc['b'] is mR:
+                cc['ego'] = True
+                return cc
+    # 2. Otherwise the corridor whose centreline is NEAREST THE VEHICLE AXIS, and only if it
+    #    is close enough to be one we could plausibly be in. This is the physical form of the
+    #    old straddle test, and unlike it, it still works when the car is running wide.
+    if centers and width > 0:
+        best = min(centers, key=lambda x: abs(x['x_bottom'] - cx))
+        if abs(best['x_bottom'] - cx) <= ego_tol * width:
+            best['ego'] = True
+            return best
     if width <= 0:
         return None
 
@@ -547,7 +591,7 @@ class Tracker:
         vs = np.linspace(ylo, yhi, 7)
         gaps = _ebottom(mR['coeffs'], vs) - _ebottom(mL['coeffs'], vs)
         wdt = float(np.median(gaps))           # median, so one bad end cannot drag it
-        return wdt if wdt > 0 else None        # a negative "width" is not a width
+        return wdt if wdt > 0 else None        # a negative "width" is not a width -- see _assign
 
     def _width_ok(self, wdt):
         """The corridor width is a PHYSICAL fact, not something to learn from whatever pair
@@ -569,19 +613,78 @@ class Tracker:
             return True
         return abs(wdt - self.lane_w_px) <= self.c.track_width_tol * self.lane_w_px
 
-    def _pick(self, cands, tracked, want_side):
-        cands = [x for x in cands if x['coeffs'] is not None]
-        if not cands:
-            return None
-        yb = self.h - 1
-        if tracked is not None:
-            best = min(cands, key=lambda x: abs(_ebottom(x['coeffs'], yb) - _ebottom(tracked, yb)))
-            return best if abs(_ebottom(best['coeffs'], yb) - _ebottom(tracked, yb)) <= self.c.jump_max else None
-        cx = self.w / 2
-        pool = [x for x in cands if (x['x_bottom'] < cx) == (want_side == 'L')]
-        if not pool:
-            return None
-        return (max if want_side == 'L' else min)(pool, key=lambda x: x['x_bottom'])
+    def _dist(self, ins, tracked):
+        """Median |dx| between a candidate and a tracked fit, over the candidate's OWN
+        observed rows. The old distance read both fits at y = h-1 -- the bottom BEV row,
+        which the near-field FOV means neither of them usually reaches."""
+        vs = np.linspace(float(ins['ys'].min()), float(ins['ys'].max()), 7)
+        return float(np.median(np.abs(_ebottom(ins['coeffs'], vs) - _ebottom(tracked, vs))))
+
+    def _assign(self, cands):
+        """Match this frame's candidates to the tracked left/right — over ALL candidates,
+        with NO image-half pre-filter. Greedy, nearest pair first; one candidate per role.
+
+        This is the fix. The old code split the candidates on `x_bottom < w/2` and only THEN
+        matched each half against its tracked fit -- so the image centre, a screen-space
+        accident, got to overrule the temporal identity the tracker exists to carry. On a
+        curve, or with the car merely running wide, the left boundary's x_bottom crosses the
+        centre; it vanishes from the left pool, reappears in the right one, and gets matched
+        as the RIGHT boundary. The corridor flips, its centre steps by a full lane width
+        (35cm / 29cm half-width = 1.2 normalised), and the steering command inverts.
+
+        Session 145617 frame 419 did exactly that: left-coast +0.49 -> right-coast -0.38.
+        `outlier_relatch` bounds how long the car acts on the inverted value (0.17s); it does
+        not stop the flip. This does. The image centre now decides left from right in exactly
+        one place -- `_seed`, when there is no track to carry.
+        """
+        scored = []
+        for i, ins in enumerate(cands):
+            for role, tracked in (('L', self.L), ('R', self.R)):
+                if tracked is None:
+                    continue
+                d = self._dist(ins, tracked)
+                if d <= self.c.jump_max:
+                    scored.append((d, i, role))
+        scored.sort(key=lambda t: t[0])
+        out, used_i, used_role = {}, set(), set()
+        for d, i, role in scored:
+            if i in used_i or role in used_role:
+                continue
+            out[role] = cands[i]
+            used_i.add(i)
+            used_role.add(role)
+        mL, mR = out.get('L'), out.get('R')
+
+        # A left boundary is LEFT OF the right one. That is not a heuristic, it is what the
+        # words mean -- and dropping the `x_bottom < w/2` pre-split silently dropped the only
+        # thing that used to enforce it. Proximity matching alone can hand `L` a lane that
+        # sits right of the one it hands `R`, and then `_measure_width` returns a NEGATIVE
+        # width, `Tracker.width` goes negative, and `ego_center` bails out on `width <= 0` --
+        # every frame, forever. Perception reports LOST at 71% while staring at two good lanes.
+        #
+        # (Found by running the ROLLBACK profile, which turns `track_width_tol` off: the width
+        # gate had been rejecting the impossible pairs and hiding this. A guard that only holds
+        # while another guard holds is not a guard.)
+        #
+        # An inverted pair means one of the two matches is wrong. Keep the closer one -- it is
+        # the better-evidenced -- and let the other side coast.
+        if mL is not None and mR is not None and self._measure_width(mL, mR) is None:
+            dL = self._dist(mL, self.L) if self.L is not None else float('inf')
+            dR = self._dist(mR, self.R) if self.R is not None else float('inf')
+            if dL <= dR:
+                mR = None
+            else:
+                mL = None
+        return mL, mR
+
+    def _seed(self, cands):
+        """No track yet. The image centre is the only thing we have to say which side is
+        which -- and this is the ONLY place it is allowed to."""
+        cx = self.w / 2.0
+        left = [x for x in cands if x['x_bottom'] < cx]
+        right = [x for x in cands if x['x_bottom'] >= cx]
+        return (max(left, key=lambda x: x['x_bottom']) if left else None,
+                min(right, key=lambda x: x['x_bottom']) if right else None)
 
     def _ema(self, prev, meas):
         if prev is None:
@@ -589,14 +692,47 @@ class Tracker:
         a = self.c.ema_alpha
         return tuple(a * m + (1 - a) * p for m, p in zip(meas, prev))
 
+    def adopt(self, a, b):
+        """Re-seed left/right from a corridor that `lane_centers` physically validated.
+
+        THE MISSING FEEDBACK LOOP. `Tracker.update` and `lane_centers` ran as strangers: the
+        tracker matched candidates against its own remembered fits, `lane_centers` paired the
+        boundaries it could actually see, and neither ever told the other it was wrong.
+
+        Which let the tracker be wrong forever. Session 145617, frames 264-280: two lanes on
+        the ground at -25cm and +4cm -- a corridor, centre -10cm. The tracker had latched the
+        RIGHT boundary (+4) as its `L`, synthesised an `R` 39cm further right at +43cm where
+        there was no lane at all, and coasted off that phantom, reporting +0.80. Every few
+        frames `lane_centers` paired the two REAL boundaries and correctly reported -0.24.
+        Neither corrected the other, so center_error oscillated across a full lane width, 8
+        times, and the car steered on it.
+
+        A pair that passed `_pair_gate` is a real lane width apart with a real overlap. That
+        beats anything we are merely remembering -- so take it, and take its identity with it.
+
+        The old code stumbled onto this correction by re-deriving left/right from the image
+        centre every single frame. That self-heals a bad identity, and destroys a good one the
+        instant a lane crosses the centre (which is the flip `_assign` exists to stop). Adopt
+        keeps the healing and drops the flip: geometry corrects identity only when geometry
+        has actually PROVEN something, not merely because a lane wandered across a column.
+        """
+        self.L, self.R = a['coeffs'], b['coeffs']
+        self.lost = 0
+        wdt = self._measure_width(a, b)
+        if wdt is not None and self._width_ok(wdt):
+            self.width = wdt if self.width is None else 0.6 * self.width + 0.4 * wdt
+
     def update(self, instances):
-        drive = list(instances)
-        Lc = [x for x in drive if x['x_bottom'] < self.w / 2]
-        Rc = [x for x in drive if x['x_bottom'] >= self.w / 2]
-        mL, mR = self._pick(Lc, self.L, 'L'), self._pick(Rc, self.R, 'R')
+        cands = [x for x in instances if x['coeffs'] is not None]
+        # Tracking -> identity. Not tracking -> geometry. Never geometry OVER identity.
+        if self.L is None and self.R is None:
+            mL, mR = self._seed(cands)
+        else:
+            mL, mR = self._assign(cands)
         gL, gR = mL is not None, mR is not None
         # `is not None` let a non-positive width through; the coast shift then moves the
-        # synthesised boundary the WRONG WAY.
+        # synthesised boundary the WRONG WAY. `_measure_width` cannot produce one any more,
+        # but this is the only other place it could enter.
         width = (self.width if (self.width is not None and self.width > 0)
                  else self.c.lane_width_default * self.w)
         if gL and gR:
@@ -767,11 +903,22 @@ class LanePipeline:
                  sliding_window_lanes(my, 'Y', c, windows))
         mL, mR = self.trk.update(lanes)
 
-        centers = lane_centers(lanes, w, h, c, lane_w_px)
-        # `if self.trk.width` was the test, and a NEGATIVE width is truthy -- it would sail
-        # straight through into `ego_center`, which then returns None on `width <= 0`.
+        # The vehicle axis, not the image centre. They coincide only when the camera is
+        # mounted dead centre (lateral_offset_cm = 0); `cam.axis_u` is the real one, and it
+        # is what `center_error` must be measured from.
+        axis = self.cam.axis_u if self.cam is not None else w / 2.0
+        centers = lane_centers(lanes, w, h, c, lane_w_px, axis)
+        # `if self.trk.width` was the test, and a NEGATIVE width is truthy -- it sailed straight
+        # through into `ego_center`, which then returned None on `width <= 0`. Belt and braces:
+        # `_measure_width` can no longer produce one, and this can no longer pass one on.
         width = self.trk.width if (self.trk.width and self.trk.width > 0) else c.lane_width_default * w
-        ec = ego_center(centers, lanes, w, width, mL, mR)
+        ec = ego_center(centers, lanes, w, width, mL, mR, axis, c)
+
+        # If the ego corridor is a REAL pair that is not the one the tracker was following,
+        # the tracker was following the wrong thing. Take the proven identity (see adopt()).
+        if (ec is not None and ec.get('b') is not None
+                and (ec['a'] is not mL or ec['b'] is not mR)):
+            self.trk.adopt(ec['a'], ec['b'])
 
         if ec is not None:
             center_error = float(ec['offset'] / (w / 2))

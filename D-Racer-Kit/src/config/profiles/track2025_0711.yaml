@@ -1,0 +1,52 @@
+# ROLLBACK PROFILE — 0711 완주 상태 복원.
+#
+# 2026-07-11 14:55 drive.launch 3세션 / 1,505프레임 / 트랙 이탈 0 / LOST 0% 를 낸
+# 파라미터 그대로다. 커밋 2d329ee 시점의 track2025.yaml 과 값이 동일하며, 그 뒤 0712 에
+# 추가된 안전장치들은 전부 무효화(no-op) 되도록 명시적으로 꺼 두었다.
+#
+# 언제 쓰나: 0712 변경분을 넣고 트랙에서 돌렸는데 주행이 나빠졌을 때, 원인을 코드에서
+# 찾기 전에 "정말 우리 변경 때문인가" 를 한 번의 런치로 확인한다.
+#
+#     ros2 launch dracer_bringup drive.launch.py \
+#         profile:=$HOME/SC2026/D-Racer-Kit/src/config/profiles/track2025_0711.yaml \
+#         command_hz:=10.0 publish_rate:=20.0
+#
+# command_hz / publish_rate 는 프로파일이 아니라 런치 인자다 (노드 생성 시 타이머를 만들어서
+# 실행 중 param set 으로는 못 바꾼다). 위 명령줄에 반드시 같이 넣어라.
+#
+# 이 파일로도 되돌아가지 않는 변경 (코드 레벨, 리빌드 필요) 은 ROLLBACK.md 참조.
+# 다만 그 셋은 0711 raw 재생으로 "검증 주행에서 비트 단위 동일" 이 측정된 것들이다.
+name: track2025_0711_rollback
+
+perception:
+  colors: [white, yellow]
+  roi_top_frac: 0.30
+  trap_top_w: 0.80
+  yellow_h_lo: 18
+  yellow_h_hi: 36
+  yellow_s_min: 65
+  yellow_v_min: 100
+
+  # --- 0712 변경분 무효화 -------------------------------------------------
+  outlier_relatch: 6     # 0712: 5. EMA 재시드까지의 연속 거부 프레임 수.
+  track_width_tol: 0.0   # 0712: 0.25. 0 = Tracker 폭 측정을 무조건 수용 (구 동작).
+
+control:
+  controller: C2
+  kp: 0.45
+  kd: 0.1
+  center_target: 0.0
+  steer_sign: 1.0
+  throttle_base: 0.23
+  throttle_min: 0.22
+  conf_gate: 0.4
+
+  # --- 0712 변경분 무효화 -------------------------------------------------
+  steer_max: 0.8         # 0712: 0.7 (1.0 - |STEER_TRIM| 로 트림 포화 제거)
+  slew_rate_per_sec: 4.5 # 0712: 이름만 바뀜. 30Hz 에서 구 slew_rate 0.15/step 과 정확히 같다.
+                         # 인지가 30Hz 를 유지하는 한 이 값이 곧 복구값이다. 만약 구
+                         # "프레임당" 동작 자체를 재현해야 한다면 코드 복구가 필요하다.
+  throttle_outlier: 1.0  # 0712: 0.0 (OUTLIER 시 스로틀 컷). 1.0 = min(thr, 1.0) = thr,
+                         # 즉 컷 없음 = 구 동작. **0712 변경 중 유일하게 정상 주행 중에도
+                         # 발동하는 항목이므로, 주행감이 이상하면 여기부터 의심하라.**
+  dt_max: 10.0           # 0712: 0.1. 크게 두면 dt 캡이 사실상 사라진다 (구 동작).
