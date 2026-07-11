@@ -362,6 +362,62 @@ def ground_homography(img, K, D, pattern, square_mm, near_cm, lateral_cm=0.0):
     return Hg, ground, und, rms
 
 
+def ground_pose(img, K, D, pattern, square_mm):
+    """H from ONE photo of the board lying on the ground -- WITHOUT measuring near_cm.
+
+    The board IS the ground plane, so solvePnP recovers where the camera sits relative
+    to it, and the "distance to the board" falls out of the math. That removes the one
+    measurement that is genuinely hard to take by hand: you cannot see the camera's
+    optical centre, nor precisely mark its footprint on the floor, nor tell the first
+    INNER corner from the board's edge. Measuring it gave Cy = -3.2 cm / +2.0 cm for the
+    two plausible readings -- i.e. both were wrong, since Cy must be 0 by definition.
+
+    Ground frame (the definition every stage above depends on):
+        origin = the camera's optical centre projected straight down onto the ground
+        +y     = forward  (the optical axis projected onto the ground)
+        +x     = right
+    Solving for it is not circular: solvePnP fixes the camera-to-board pose from the
+    corners alone; we then merely CHOOSE to put the origin under the camera.
+
+    Returns (H_ground, cam_height_cm, near_cm, lateral_cm, rms_cm) where H_ground maps
+    UNDISTORTED px -> ground cm, and near_cm/lateral_cm are REPORTED (measured for you),
+    not required.
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+    corners = find_corners(gray, pattern)
+    if corners is None:
+        raise RuntimeError('no chessboard found in the ground photo')
+    objp = object_grid(pattern, square_mm)                  # board coords (mm), z=0
+    ok, rvec, tvec = cv2.solvePnP(objp, corners, K, D, flags=cv2.SOLVEPNP_ITERATIVE)
+    if not ok:
+        raise RuntimeError('solvePnP failed on the ground photo')
+
+    R, _ = cv2.Rodrigues(rvec)                             # board -> camera
+    C = (-R.T @ tvec).ravel()                              # camera centre, BOARD coords (mm)
+    axis = R.T @ np.array([0.0, 0.0, 1.0])                 # optical axis, board coords
+    height_mm = abs(float(C[2]))
+
+    fwd = np.array([axis[0], axis[1]], float)              # optical axis on the board plane
+    nf = np.linalg.norm(fwd)
+    if nf < 1e-6:
+        raise RuntimeError('camera looks straight down -- forward direction undefined')
+    fwd /= nf
+    right = np.array([fwd[1], -fwd[0]])                    # +90 deg from forward
+    cam_right = (R.T @ np.array([1.0, 0.0, 0.0]))[:2]      # image-right on the board plane
+    if float(right @ cam_right) < 0:
+        right = -right
+
+    rel = objp[:, :2] - C[:2]                              # corners relative to the footprint
+    ground = np.stack([(rel @ right) / 10.0, (rel @ fwd) / 10.0], -1).astype(np.float32)
+
+    und = cv2.undistortPoints(corners, K, D, P=K).reshape(-1, 2)
+    Hg, _ = cv2.findHomography(und, ground, method=0)
+    proj = cv2.perspectiveTransform(und.reshape(-1, 1, 2), Hg).reshape(-1, 2)
+    rms = float(np.sqrt(((proj - ground) ** 2).sum(axis=1).mean()))
+    return (Hg, height_mm / 10.0, float(ground[:, 1].min()),
+            float(ground[:, 0].mean()), rms)
+
+
 def ground_extent(Hg, K, D, image_size, margin=0.02):
     """Where on the ground can this camera actually see? -> (x_half, y_near, y_far) cm.
 

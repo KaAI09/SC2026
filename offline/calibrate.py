@@ -20,10 +20,12 @@ CLI/리포트만 담당한다 (온라인 노드와 같은 코드 = 오프라인/
   ../.venv/bin/python calibrate.py --intrinsics shots/intr --square-mm 24.8
 
   # 2) H — 지면에 눕힌 보드 1장. 장착 자세 -> 카메라를 건드리면 이것만 다시 찍는다.
-  #    ★ 보드를 카메라 앞 18~22cm 에 둘 것 (합성 스윕: 이 구간이면 틸트와 무관하게 검출.
-  #      15cm 이하는 보드가 화면 밖으로 잘려 실패한다)
+  #    거리를 잴 필요가 없다: 보드가 지면 평면을 정의하므로 solvePnP 가 카메라 위치를
+  #    풀어주고, 카메라~보드 거리는 산출된다(손으로는 광학중심의 지면 투영점도, 첫
+  #    '내부 코너'도 정확히 짚기 어렵다 — 실측 두 해석 모두 Cy≠0 으로 틀렸었다).
+  #    보드는 화면에 다 들어오게, 좌우 중앙에, 노면에 평평하게만 두면 된다.
   ../.venv/bin/python calibrate.py --intrinsics shots/intr --ground shots/ground.png \
-      --square-mm 24.8 --near-cm 20 --lane-width-cm 60 \
+      --square-mm 25.0 --lane-width-cm 35 --cam-height-cm 23 \
       --out ../D-Racer-Kit/src/config/camera.yaml
 
   # 3) 검증 — 직선 구간 프레임에서 BEV가 실제로 metric 한지 (카메라를 만진 뒤엔 항상)
@@ -45,7 +47,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__),
                                 '..', 'D-Racer-Kit', 'src', 'dracer_core'))
 from dracer_core.calib import (  # noqa: E402
     CameraModel, build_model, calibrate_intrinsics, find_corners, ground_extent,
-    ground_homography,
+    ground_pose,
 )
 
 
@@ -104,10 +106,18 @@ def do_ground(a, K, D, size):
         sys.exit(f"지면 사진 해상도 {img.shape[1]}x{img.shape[0]} != K·D 해상도 "
                  f"{size[0]}x{size[1]} — 같은 파이프라인으로 찍어야 한다")
 
-    Hg, ground, und, grms = ground_homography(
-        img, K, D, a.pattern, a.square_mm, a.near_cm, a.lateral_cm)
-    print(f"\n[H] 지면 보드 → 호모그래피")
-    print(f"  재투영 RMS: {grms:.3f} cm  ({'양호' if grms < 1.0 else '⚠ 1cm 초과 — near-cm 실측/보드 평탄도 확인'})")
+    # 보드가 지면 평면을 정의하므로 solvePnP 가 카메라 위치를 준다 -> near_cm 실측 불필요.
+    # (손으로 재면 광학중심의 지면 투영점도, 첫 '내부 코너'도 정확히 짚기 어렵다)
+    Hg, cam_h, near_cm, lat_cm, grms = ground_pose(img, K, D, a.pattern, a.square_mm)
+    print(f"\n[H] 지면 보드 → 호모그래피  (near_cm 은 실측이 아니라 산출)")
+    print(f"  카메라 높이 : {cam_h:.1f} cm" +
+          (f"   (실측 {a.cam_height_cm} cm, 오차 {abs(cam_h - a.cam_height_cm):.1f} cm"
+           f" — {'정합' if abs(cam_h - a.cam_height_cm) < 3 else '⚠ 불일치: 보드 평탄도/칸 크기 확인'})"
+           if a.cam_height_cm else "   (--cam-height-cm 을 주면 교차검증한다)"))
+    print(f"  near        : {near_cm:.1f} cm  (카메라 수직 투영점 → 가장 가까운 코너열)")
+    print(f"  보드 횡위치 : {lat_cm:+.1f} cm  (중앙에 놓았다면 0 근처)")
+    print(f"  재투영 RMS  : {grms:.3f} cm  "
+          f"({'양호' if grms < 1.0 else '⚠ 1cm 초과 — 보드 평탄도/칸 크기 확인'})")
 
     x_half, y_near, y_far = ground_extent(Hg, K, D, size)
     if a.x_half:
@@ -185,8 +195,8 @@ def main():
                     help='내부 코너 수 ColsxRows (기본 8x5 = 9x6 사각형 보드)')
     ap.add_argument('--square-mm', type=float, default=25.0,
                     help='체커 한 칸 실측 mm (인쇄물을 자로 잰 값!)')
-    ap.add_argument('--near-cm', type=float, default=20.0,
-                    help='카메라 → 지면 보드 가장 가까운 코너열 거리 (cm, 실측). 18~22 권장')
+    ap.add_argument('--cam-height-cm', type=float,
+                    help='카메라 높이 실측 (cm). 주면 복원값과 교차검증한다 (필수 아님)')
     ap.add_argument('--runtime-size', type=_pattern, default=(320, 160),
                     help='런타임(인지) 해상도 WxH — 여기로 정확히 rescale 해서 저장')
     ap.add_argument('--lateral-cm', type=float, default=0.0,
