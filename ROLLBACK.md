@@ -254,10 +254,47 @@ colcon build --symlink-install
 
 ## 🔴 A. 실차 검증 — 다른 모든 것을 막고 있다
 
-- [ ] **§1-1 빌드** (`dracer_msgs` 먼저)
-- [ ] **§1-2 정지 검증** — 기동 로그 / perception 워치독 / joystick 워치독 / 조향 방향
-- [ ] **§1-3 저속 주행** — OUTLIER 스로틀 컷 주행감 (**유일하게 주행감을 바꾸는 변경**)
-- [ ] **§1-4 분기 확인** — `n_corridors >= 2` 가 로터리에서 실제로 뜨는가
+- [x] **§1-1 빌드** (`dracer_msgs` 먼저) — 2026-07-11 19:30 완료
+- [x] **§1-2 기동 로그** — 2026-07-11 19:30 **전부 기대값**
+      ```
+      actuator   : command_hz=30.0
+      control    : controller=C2 throttle_base=0.23 steer_max=0.7
+                   state_timeout=0.25s joystick_timeout=0.3s throttle_outlier=0.0
+      perception : BEV 232x207px @ 4.00px/cm  x=±29cm y=26..78cm  ground_rms=0.114px
+      [lane]     : 30.0Hz  state=OK  LOST 0  corridors=1[tracked] / 0[coast]
+      ```
+- [x] **§1-3 저속 주행** — 2026-07-11 **주행 정상**. OUTLIER 스로틀 컷은 이 세션에서 미발생
+      (`state=OK` 내내). 랩 전체를 돌려 랩당 3~4회 예상치를 확인해야 한다.
+- [ ] **perception / joystick 워치독 실증** — 아직 안 함 (`pkill -f perception_node` 등)
+- [ ] **조향 방향** — `/control` echo 로 확인 안 함
+- [ ] **§1-4 분기 확인** — `n_corridors >= 2` 가 로터리에서 실제로 뜨는가 ⬅ **다음**
+
+### A-x. 0711 19:30 기동 로그에서 발견 (미수정, 합의 하에 보류)
+
+- [ ] **A1. engage 를 인지가 뜨기 전에 눌러도 아무 로그가 없다.**
+      ```
+      19:30:06.396  ENGAGE ON (joystick A)
+      19:30:07.279  perception: loaded profile      <- 0.9초 뒤
+      19:30:07.926  [lane] 첫 LaneState             <- 1.5초 뒤
+      ```
+      perception 워치독이 `/control` 을 `(0,0)` 으로 잡고 있었다 — **의도대로 동작했다.**
+      그러나 `state_stale` 초기값이 `True` (기동 스팸 방지) 라서 **로그가 하나도 없다.**
+      운전자는 "A 를 눌렀는데 왜 안 가지?" 를 알 방법이 없다. 한 줄 로그면 된다.
+- [ ] **A2. `control_node` 만 종료 시 다른 예외로 죽는다.**
+      ```
+      RuntimeError: Unable to convert call argument to Python object
+        in _take_subscription -> sub.handle.take_message(...)
+      ```
+      Ctrl-C 로 컨텍스트가 무효화된 상태의 in-flight `take_message` 실패 (rclpy 종료 레이스).
+      `main()` 이 `except KeyboardInterrupt` 만 잡아서 이 `RuntimeError` 가 빠져나간다.
+      → `destroy_node()` 의 **중립 `(0,0)` 발행**을 건너뛸 수 있다. actuator 의
+      `control_timeout: 0.5s` 가 백업이라 차는 결국 서지만 최대 0.5초 늦는다.
+      (나머지 7개 노드의 "rcl_shutdown already called" 는 기존부터 있던 이중 shutdown
+       패턴이고 무해하다 — 내 변경과 무관.)
+- [ ] **A3. 로그 스팸이 CPU 를 먹고 `[lane]` 로그를 묻는다.**
+      `camera_node` "Published frame" @30Hz (초당 30줄) + `joystick_node` DBG @5Hz (초당 45줄)
+      = **초당 75줄**. D3-G 에서 무시할 수 없고, 실제로 봐야 할 `[lane]` 이 안 보인다.
+      `drive.launch` 에서 `debug_log:=false` / `debug_log_enable:=false` 로 끄면 된다.
 
 ## 🔴 B. 안전 — 알려진 미수정 구멍
 
