@@ -14,9 +14,17 @@ parameter so the same code retunes to any track.
                                   'speed': throttle_proxy}, dt)
 
 This module NEVER actuates. It only computes a command; a separate ROS node
-would publish it, gated by the vehicle-safety layer. Sign conventions match the
-recorded data (center_error < 0  ->  steer right/+), and can be flipped per
-vehicle with `steer_sign`.
+would publish it, gated by the vehicle-safety layer.
+
+SIGNS. center_error is the corridor centre's offset from the vehicle axis, + = the
+corridor lies to the RIGHT. The law is u = -Kp*e, so a corridor to the LEFT (e < 0)
+gives u > 0: on this vehicle (steer_sign = +1.0, confirmed on the 0711 track runs)
+**u > 0 steers LEFT** -- the car turns toward the corridor, which is the only thing
+that can be true of a controller that laps a track. The old docstring here claimed
+"center_error < 0 -> steer right/+", which is the same command with the opposite
+meaning attached; the code was right and the sentence was wrong. `steer_sign` flips
+the emitted value for a vehicle wired the other way -- and it is applied in exactly
+one place, `_emit()`.
 
 Controllers (C6 bang-bang intentionally omitted; C7 learning is optional/later):
   C1 P            steering = -Kp*e
@@ -70,6 +78,11 @@ class CtrlCfg:
 
     # --- safety gating (DETECTION dependent) ---
     conf_gate: float = 0.3         # confidence below this -> hold last steer, coast
+    throttle_outlier: float = 0.0  # throttle while perception reports state == 'OUTLIER'.
+                                   # NOT floored by throttle_min: with throttle_base 0.23 and
+                                   # throttle_min 0.22 there is no headroom to slow down at
+                                   # all, so a floored reduction would be a no-op. 0.0 = coast
+                                   # (momentum carries the car, friction bleeds speed).
 
 
 PRESETS = {
@@ -107,13 +120,27 @@ class Controller:
             return st['ema']
         return st.get('center_error')
 
+    def _emit(self, u):
+        """Internal command -> actuator command. `steer_sign` is applied HERE and ONLY here.
+
+        `prev_u` holds the INTERNAL value. It used to hold the emitted (sign-applied) one,
+        and the low-confidence hold then read it back and multiplied by `steer_sign` a
+        SECOND time -- so on a steer_sign=-1 vehicle "hold the last command" inverted it
+        every frame instead. Latent today (steer_sign=1.0, and conf is only ever 0.9/0.5/0.0
+        against a 0.4 gate, so the hold path never runs), but raising `conf_gate` above 0.5
+        to be careful about coast frames is exactly the next tuning step anyone would take,
+        and it would arm the bug.
+        """
+        return u * self.cfg.steer_sign
+
     def step(self, st, dt):
         c = self.cfg
         center = self._center(st)
         conf = st.get('confidence', 1.0)
+        state = str(st.get('state') or 'OK')
         if center is None:
             # no lane -> keep last steering, coast slow (safety layer decides more)
-            return self.prev_u, c.throttle_min, {'gated': 'no_center'}
+            return self._emit(self.prev_u), c.throttle_min, {'gated': 'no_center'}
 
         e = center - c.center_target
         de = 0.0 if (self.prev_e is None or dt <= 0) else (e - self.prev_e) / dt
@@ -141,10 +168,11 @@ class Controller:
 
         gated = None
         if conf < c.conf_gate:
-            u = self.prev_u          # low confidence -> hold last command
+            u = self.prev_u          # low confidence -> hold last command (internal space)
             gated = 'low_conf_hold'
 
-        u *= c.steer_sign
+        # Saturation / slew / smoothing all act on the INTERNAL command, so they stay
+        # symmetric and `steer_sign` never enters the state. Emitted once, at the bottom.
         u = clamp(u, -c.steer_max, c.steer_max)
         if c.slew_rate > 0:
             u = clamp(u, self.prev_u - c.slew_rate, self.prev_u + c.slew_rate)
@@ -156,5 +184,19 @@ class Controller:
         thr = max(c.throttle_min, thr)
         if conf < c.conf_gate:
             thr = c.throttle_min
+        if state == 'OUTLIER':
+            # Perception is telling us its own EMA is not to be trusted: the raw measurement
+            # has disagreed past `outlier_jump` and has not yet been believed (see
+            # perception_core._Stabilizer). We are steering on a value that is stale and --
+            # after a corridor flip -- WRONG-SIGNED, for up to `outlier_relatch` frames.
+            #
+            # That is exactly the 145617 failure: 1.47s of inverted steering while perception
+            # was reporting the truth the whole time. `outlier_relatch` shortened the window
+            # to 0.17s; this closes it. Perception knew. Nobody asked.
+            #
+            # Steering needs no extra hold: a frozen EMA is a constant `e`, so `de` decays to
+            # zero and u is already held. What we buy here is GROUND NOT COVERED.
+            thr = min(thr, c.throttle_outlier)
+            gated = gated or 'outlier_slow'
 
-        return u, thr, {'e': e, 'de': de, 'gated': gated}
+        return self._emit(u), thr, {'e': e, 'de': de, 'state': state, 'gated': gated}

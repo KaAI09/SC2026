@@ -568,20 +568,42 @@ class Tracker:
 # F: scalar output stabilizer (center_error EMA + failsafe state name)
 # ==========================================================================
 class _Stabilizer:
+    """center_error EMA + failsafe state name.
+
+    TWO counters, not one. `missing` counts frames with NO usable measurement (lost
+    detection / low confidence); `rejects` counts consecutive OUTLIER rejections of a
+    measurement that DOES exist but disagrees with the EMA. They answer different
+    questions and feed different thresholds (`lost_stop_frames` vs `outlier_relatch`),
+    and sharing one variable silently mixed them:
+
+      5 frames of no detection (lost=5) -> detection returns with a legitimately
+      different value -> lost=6 >= outlier_relatch -> INSTANT relatch.
+
+    That is the one-frame spike defence deleting itself exactly when it is needed --
+    the first frame back after a dropout is the least trustworthy one there is. The
+    relatch rule is "the new value held for `outlier_relatch` frames STRAIGHT", and
+    only a counter that counts rejections can say that.
+    """
+
     def __init__(self, c):
         self.c = c
         self.ema = None
-        self.lost = 0
+        self.missing = 0     # consecutive frames with no usable measurement
+        self.rejects = 0     # consecutive OUTLIER rejections of a usable measurement
         self.hist = deque(maxlen=max(1, c.median_window))
 
     def update(self, center_error, conf):
         c = self.c
         if center_error is None or conf < c.conf_low:
-            self.lost += 1
-            return self.ema, ('LOST' if self.lost >= c.lost_stop_frames else 'HOLD')
+            self.missing += 1
+            # A rejection streak is a claim about DISAGREEING measurements. No
+            # measurement is not a disagreement -- it breaks the streak.
+            self.rejects = 0
+            return self.ema, ('LOST' if self.missing >= c.lost_stop_frames else 'HOLD')
+        self.missing = 0
         if self.ema is not None and abs(center_error - self.ema) > c.outlier_jump:
-            self.lost += 1
-            if self.lost < c.outlier_relatch:
+            self.rejects += 1
+            if self.rejects < c.outlier_relatch:
                 return self.ema, 'OUTLIER'
             # The rejection had no way out. `outlier_jump` exists to swallow a ONE-frame
             # spike, but the test is against a frozen EMA, so a SUSTAINED move past it
@@ -600,7 +622,7 @@ class _Stabilizer:
             # `outlier_relatch` frames straight it is not noise -- re-seed onto it.
             self.hist.clear()
             self.ema = None
-        self.lost = 0
+        self.rejects = 0
         val = center_error
         if c.use_median:
             self.hist.append(center_error)

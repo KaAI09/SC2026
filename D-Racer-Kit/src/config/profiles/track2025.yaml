@@ -36,3 +36,10 @@ control:
   throttle_base: 0.23      # 0711 실차 검증 (was 0.20)
   throttle_min: 0.22       # 0711 실차 검증 (was 0.19)
   conf_gate: 0.4
+  # 인지가 state=OUTLIER 를 낼 때의 스로틀. OUTLIER 는 "지금 내가 주는 ema 는 믿지 마라"
+  # 는 뜻이고, 코리도어 전환 직후엔 부호까지 반대일 수 있다 (relatch 로 최대 5프레임,
+  # 0.17s @30Hz). 그 동안 지나가는 거리를 줄이는 게 목적.
+  # throttle_min(0.22) 으로 낮추는 건 base(0.23) 와 차이가 없어 무의미하므로 floor 를
+  # 적용하지 않는다. 0.0 = 타력주행(관성으로 굴러가며 마찰로 감속). 실측 OUTLIER 비율은
+  # 3.5% (145617) 이므로 스로틀이 끊기는 시간은 전체의 3.5% 수준이다.
+  throttle_outlier: 0.0

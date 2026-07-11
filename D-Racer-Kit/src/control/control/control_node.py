@@ -11,9 +11,35 @@ SAFETY MODEL
   * E-STOP: joystick X button (Joystick.e_stop_en) latches a stop; while
     stopped the node publishes neutral (0, 0) and A-engage is forced off.
   * When idle / E-stopped / low-confidence / lane lost -> throttle 0.
+  * PERCEPTION WATCHDOG (`state_timeout`): no /lane/state for this long -> publish
+    neutral (0, 0). See below -- this is the one that keeps the car on the ground.
+  * JOYSTICK WATCHDOG (`joystick_timeout`): no /joystick for this long -> the joystick
+    engage is forced OFF (the `engage` param is untouched). `js_engage` mirrors a message
+    field, so without this it stays True forever once the messages stop -- the car drives
+    on with nobody holding the pad and no button left to press.
+    CAVEAT, and it is a real one: this fires when joystick_node DIES. It does NOT fire when
+    the PAD is merely unplugged, because joystick_node's read loop swallows the error and
+    its timer keeps republishing the last input at 50Hz -- engage flag and all. /joystick
+    stays perfectly fresh. Closing that needs joystick_node to stop asserting a pad it can
+    no longer read; it is not fixed here.
   * steering is clamped + slew-limited (in the controller); the node always
     publishes at publish_rate so the actuator's control_timeout watchdog stays
     fresh. Kill this node and the car coasts to the watchdog stop.
+
+WHY THE PERCEPTION WATCHDOG EXISTS
+  The actuator has a dead-man on /control, and this node feeds it at publish_rate
+  from a timer -- from `latest_cmd`, which only `state_callback` ever writes. So if
+  the CAMERA or PERCEPTION dies, /control does not stop: this node keeps republishing
+  the last command it ever computed, at full rate, forever. It is perfectly fresh, and
+  it is a steering angle and a throttle from a world that no longer exists. The
+  actuator's watchdog cannot see the difference and never fires.
+
+      camera/perception dies -> /lane/state stops -> latest_cmd freezes
+      -> /control stays FRESH -> actuator watchdog never fires
+      -> car drives away on its last command
+
+  A dead-man is only as good as the staleness it can actually observe. The actuator
+  watches its own input; nobody was watching ours.
 
 Bring up only with the wheels off the ground first, then low speed, with a
 clear stop path.
@@ -40,7 +66,7 @@ from dracer_core.profile import load_profile, section
 # CtrlCfg fields exposed as live-tunable ROS params (rebuilt on `ros2 param set`).
 _CTRL_FLOATS = ('kp', 'kd', 'ki', 'center_target', 'steer_max', 'steer_sign',
                 'slew_rate', 'out_ema', 'throttle_base', 'throttle_min',
-                'curv_slow', 'conf_gate')
+                'curv_slow', 'conf_gate', 'throttle_outlier')
 _CTRL_PARAMS = ('controller',) + _CTRL_FLOATS
 
 
@@ -61,6 +87,20 @@ class ControlNode(Node):
         p('control_topic', '/control')
         p('publish_rate', 20.0)
         p('engage', False)
+        # Perception dead-man. 0.25s = ~8 frames at the 30Hz perception runs at; a gap that
+        # long is already an anomaly, not jitter (measured worst gap over the 0711 runs:
+        # 38ms, across 1502 frames, zero drops). Must stay well UNDER the actuator's own
+        # control_timeout (0.5s) -- ours is the only watchdog that can see this failure, so
+        # it has to fire first. <= 0 disables (do not).
+        p('state_timeout', 0.25)
+        # Joystick dead-man. `js_engage` MIRRORS Joystick.engage, so it holds its last value
+        # forever if the messages stop -- and if that value was True, the car keeps driving
+        # with nobody holding the pad. Same failure as the perception one above: a flag that
+        # only ever gets refreshed, never expired. joystick_node publishes at 50Hz, so 0.3s
+        # is 15 missed messages -- a disconnection, not jitter.
+        # This expires the JOYSTICK engage only; the `engage` PARAM path (headless bring-up
+        # with no pad at all) is untouched.
+        p('joystick_timeout', 0.3)
         # offline-selected profile (authoritative for the fields it specifies)
         p('profile', '')
         # control (C2 PD defaults, conservative)
@@ -77,12 +117,15 @@ class ControlNode(Node):
         p('throttle_min', 0.0)
         p('curv_slow', 0.0)
         p('conf_gate', 0.4)
+        p('throttle_outlier', 0.0)
 
         gp = self.get_parameter
         state_topic = str(gp('state_topic').value)
         joystick_topic = str(gp('joystick_topic').value)
         control_topic = str(gp('control_topic').value)
         self.publish_rate = float(gp('publish_rate').value)
+        self.state_timeout = float(gp('state_timeout').value)
+        self.joystick_timeout = float(gp('joystick_timeout').value)
 
         # profile (offline-selected) -> push into the ROS params so params are the
         # single source of truth; then live `ros2 param set` tuning stays correct.
@@ -99,6 +142,10 @@ class ControlNode(Node):
         self.js_engage = False        # joystick A-button engage (OR'd with param)
         self.latest_cmd = (0.0, 0.0)
         self.prev_t = None
+        self.last_state_time = None   # wall time of the last /lane/state (perception dead-man)
+        self.state_stale = True       # nothing received yet -> not safe to drive
+        self.last_js_time = None      # wall time of the last /joystick (joystick dead-man)
+        self.js_stale = False         # True only after a joystick we HAD went silent
 
         self.create_subscription(LaneState, state_topic, self.state_callback, 10)
         self.create_subscription(Joystick, joystick_topic, self.joystick_callback, 10)
@@ -109,7 +156,10 @@ class ControlNode(Node):
             'control_node up. ACTUATION: publishes /control ONLY when engaged '
             '(engage:=true OR joystick A). E-STOP=joystick X. Wheels off the ground first. '
             f'controller={gp("controller").value} '
-            f'throttle_base={gp("throttle_base").value} steer_max={gp("steer_max").value}'
+            f'throttle_base={gp("throttle_base").value} steer_max={gp("steer_max").value} '
+            f'state_timeout={self.state_timeout}s '
+            f'joystick_timeout={self.joystick_timeout}s '
+            f'throttle_outlier={gp("throttle_outlier").value}'
         )
 
     # ---- control params (profile load + live tuning) ---------------------
@@ -145,16 +195,39 @@ class ControlNode(Node):
 
     # ---- inputs -----------------------------------------------------------
     def joystick_callback(self, msg: Joystick):
+        self.last_js_time = self.get_clock().now()
+        if self.js_stale:
+            self.js_stale = False
+            self.get_logger().warning(
+                'joystick recovered. engage stays OFF until you press A again.')
         if bool(msg.e_stop_en):
             if not self.e_stop:
                 self.get_logger().error('E-STOP latched (joystick X). Autonomous output disabled.')
             self.e_stop = True
         self.js_engage = bool(msg.engage)
 
+    def _joystick_is_stale(self):
+        """Has the joystick gone silent? Only meaningful once we have actually seen one --
+        a headless bring-up (engage param, no pad) must not be treated as a lost pad."""
+        if self.joystick_timeout <= 0.0 or self.last_js_time is None:
+            return False
+        age = (self.get_clock().now() - self.last_js_time).nanoseconds / 1e9
+        return age > self.joystick_timeout
+
     def state_callback(self, msg: LaneState):
         t = msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9
         dt = 0.0 if self.prev_t is None else max(0.0, t - self.prev_t)
         self.prev_t = t
+        first = self.last_state_time is None
+        self.last_state_time = self.get_clock().now()
+        if self.state_stale and not first:
+            # Coming back from a perception dropout. Do NOT resume the controller's
+            # internal state across the gap: prev_u is the command from before the
+            # blackout, and prev_e would make the first derivative a step over a hole of
+            # unknown length. Restart from neutral and let the slew limit walk it back up.
+            self.controller.reset()
+            self.get_logger().warning('lane state recovered — controller reset, resuming.')
+        self.state_stale = False
 
         center = _num(msg.center_error, msg.valid)
         st = {
@@ -162,6 +235,7 @@ class ControlNode(Node):
             'ema': _num(msg.ema, msg.valid),
             'heading': _num(msg.heading, msg.heading_valid),
             'confidence': float(msg.confidence),
+            'state': str(msg.state),      # OUTLIER -> throttle_outlier (control_core)
         }
         steer, thr, _ = self.controller.step(st, dt)
         # node-level conservative safety: stop throttle on low conf / lost / hold
@@ -170,11 +244,41 @@ class ControlNode(Node):
             thr = 0.0
         self.latest_cmd = (float(steer), float(thr))
 
+    def _state_is_stale(self):
+        """Has perception stopped talking to us? See the module docstring."""
+        if self.state_timeout <= 0.0:
+            return False
+        if self.last_state_time is None:
+            return True               # never heard from perception -> do not drive
+        age = (self.get_clock().now() - self.last_state_time).nanoseconds / 1e9
+        return age > self.state_timeout
+
     # ---- output (safety-gated) -------------------------------------------
     def publish_cmd(self):
+        # Expire the joystick engage BEFORE it is read. `js_engage` is a mirror of a message
+        # field, so silence leaves it frozen at whatever it last was -- and if that was True
+        # the car drives on with nobody holding the pad, and no button left to press. Latch
+        # it off: a recovered joystick does NOT re-engage by itself, the driver presses A.
+        if self._joystick_is_stale() and not self.js_stale:
+            self.js_stale = True
+            if self.js_engage:
+                self.get_logger().error(
+                    f'JOYSTICK STALE: no /joystick for >{self.joystick_timeout:.2f}s while '
+                    'ENGAGED. Forcing engage OFF. Press A to re-engage once it is back.')
+            self.js_engage = False
+
         # engage if EITHER the param (ros2 param set) OR the joystick A-button is on
         engage = bool(self.get_parameter('engage').value) or self.js_engage
-        if self.e_stop or not engage:
+        stale = self._state_is_stale()
+        if stale and not self.state_stale and engage:
+            self.get_logger().error(
+                f'PERCEPTION STALE: no /lane/state for >{self.state_timeout:.2f}s. '
+                'Publishing neutral (0, 0). The car will NOT keep driving on the last '
+                'command — check camera_node / perception_node.')
+        if stale:
+            self.state_stale = True
+
+        if self.e_stop or not engage or stale:
             steer, thr = 0.0, 0.0
         else:
             steer, thr = self.latest_cmd
