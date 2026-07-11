@@ -22,14 +22,17 @@ perception:
   yellow_s_min: 65
   yellow_v_min: 100
 
+# 0711 성공 주행(rslt/recorder, 3세션 1,505프레임, 트랙 이탈 0)에서 보드가 실제로 돌린 값.
+# 인지가 10.7 -> 30Hz 가 되면서 같은 kp 로도 조향이 훨씬 촘촘히 먹으므로 kp 를 올릴 여유가
+# 생겼고, throttle 도 함께 올렸다. 이전 값(kp 0.35 / base 0.20 / min 0.19)은 10Hz 시절 것이다.
 control:
   controller: C2           # PD baseline
-  kp: 0.35
+  kp: 0.45                 # 0711 실차 검증 (was 0.35 @10.7Hz)
   kd: 0.1
   center_target: 0.0
   steer_max: 0.8
   steer_sign: 1.0
   slew_rate: 0.15
-  throttle_base: 0.20
-  throttle_min: 0.19
+  throttle_base: 0.23      # 0711 실차 검증 (was 0.20)
+  throttle_min: 0.22       # 0711 실차 검증 (was 0.19)
   conf_gate: 0.4

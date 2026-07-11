@@ -89,6 +89,10 @@ class Cfg:
     # scalar output stabilizer (smooths center_error + names the failsafe state)
     ema_alpha: float = 0.4
     outlier_jump: float = 0.5
+    outlier_relatch: int = 6     # consecutive rejections -> believe the new value, re-seed.
+                                 # Without it `outlier_jump` latches forever (see _Stabilizer).
+                                 # 6 @30Hz = 0.2s: still swallows any spike, but a real
+                                 # corridor flip is acted on in a fifth of a second.
     use_median: bool = False
     median_window: int = 5
     conf_low: float = 0.25
@@ -577,7 +581,25 @@ class _Stabilizer:
             return self.ema, ('LOST' if self.lost >= c.lost_stop_frames else 'HOLD')
         if self.ema is not None and abs(center_error - self.ema) > c.outlier_jump:
             self.lost += 1
-            return self.ema, 'OUTLIER'
+            if self.lost < c.outlier_relatch:
+                return self.ema, 'OUTLIER'
+            # The rejection had no way out. `outlier_jump` exists to swallow a ONE-frame
+            # spike, but the test is against a frozen EMA, so a SUSTAINED move past it
+            # re-rejects itself forever: every later frame is measured against the same
+            # stale value and fails the same way. That is a latch, not a filter.
+            #
+            # It fires on a legitimate event. When the tracker swaps which boundary it
+            # can see, the corridor centre steps by a full lane width -- 35cm over a 29cm
+            # half-width = 1.2 normalised, way past the 0.5 gate. Session 145617 did this
+            # at frame 419 (left-coast +0.49 -> right-coast -0.38) and never recovered:
+            # the EMA stayed pinned at +0.428 for the last 44 frames (1.47s) while
+            # perception kept correctly reporting -0.38. control_core reads `ema` and
+            # ignores `state`, so the car steered on the WRONG SIGN for 1.47s.
+            #
+            # So: reject a spike, but believe a fact. If the new value holds for
+            # `outlier_relatch` frames straight it is not noise -- re-seed onto it.
+            self.hist.clear()
+            self.ema = None
         self.lost = 0
         val = center_error
         if c.use_median:
