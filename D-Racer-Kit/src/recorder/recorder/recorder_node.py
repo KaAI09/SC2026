@@ -192,9 +192,10 @@ class RecorderNode(Node):
                 int(s.heading_valid), _f(s.heading), round(float(s.confidence), 3),
                 round(float(s.left_conf), 3), round(float(s.right_conf), 3),
                 s.state, int(s.used_fallback),
+                int(s.n_corridors), s.ego_rule,
             ]
         else:
-            row += ['', '', '', '', '', '', '', '', '', '']
+            row += ['', '', '', '', '', '', '', '', '', '', '', '']
         row += [_f(self._ctrl[0]), _f(self._ctrl[1]),
                 _f(self._manual[0]), _f(self._manual[1]), int(self._e_stop)]
         self._csv_writer.writerow(row)
@@ -211,7 +212,8 @@ class RecorderNode(Node):
             self._csv_writer.writerow([
                 'frame_time', 'valid', 'center_error', 'ema', 'heading_valid',
                 'heading', 'confidence', 'left_conf', 'right_conf', 'state',
-                'used_fallback', 'ctrl_steering', 'ctrl_throttle',
+                'used_fallback', 'n_corridors', 'ego_rule',
+                'ctrl_steering', 'ctrl_throttle',
                 'manual_steering', 'manual_throttle', 'e_stop',
             ])
             self._session = stamp

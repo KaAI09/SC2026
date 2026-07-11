@@ -35,6 +35,7 @@ The pipeline NEVER commands the vehicle; it only produces a lane-state estimate
 """
 from collections import deque
 from dataclasses import dataclass, fields, replace
+import itertools
 import math
 
 import cv2
@@ -519,12 +520,29 @@ def lane_centers(lanes, w, h, c, lane_w_px=0.0, axis=None):
     What is left is physics: `_pair_gate` already demands the pair be a real lane width apart
     (`pair_width_tol`), which is a question only a metric BEV can ask -- and it is a far
     stronger test than "on opposite sides of the screen" ever was.
+
+    ALL PAIRS, not adjacent ones. `zip(ls, ls[1:])` only ever offered `_pair_gate` neighbours
+    in x-order, so ONE stray instance between the two real boundaries hid the corridor
+    completely -- neither half of it is a lane width, and the real pair was never even a
+    candidate. That is not a rare accident, it is the roundabout: the yellow line runs 5-10cm
+    inside the white lane edge, and white and yellow are detected by SEPARATE sliding-window
+    passes that never merge across colour (nor should they -- measured, 88% of those close
+    cross-colour pairs are genuinely different tapes). So the frame reads [white, yellow,
+    white] and adjacent pairing offers (white,yellow)=5cm and (yellow,white)=30cm. The real
+    (white,white)=35cm corridor is invisible.
+
+    Measured over the 0711 dashcam clips, on the 323 frames that see 3+ lanes:
+        adjacent pairs -> 2+ corridors in   0 frames
+        all pairs      -> 2+ corridors in 158 frames
+    And 2+ corridors is the whole premise of a branch decision: you cannot choose between
+    routes you cannot see. `_pair_gate` still has to pass, so this widens the candidate set,
+    not the acceptance criteria. With <=6 instances (3 per colour) it is <=15 gate calls.
     """
     cx = w / 2.0 if axis is None else float(axis)
     ls = sorted([x for x in lanes if x['coeffs'] is not None],
                 key=lambda x: x['x_bottom'])
     out = []
-    for a, b in zip(ls, ls[1:]):
+    for a, b in itertools.combinations(ls, 2):
         ov = _pair_gate(a, b, h, c, lane_w_px)
         if ov is None:
             continue
@@ -532,7 +550,7 @@ def lane_centers(lanes, w, h, c, lane_w_px=0.0, axis=None):
         coeffs = tuple((p + q) / 2.0 for p, q in zip(a['coeffs'], b['coeffs']))
         x_bottom = float(_ebottom(coeffs, yhi))
         out.append({'coeffs': coeffs, 'x_bottom': x_bottom, 'offset': x_bottom - cx,
-                    'ego': False, 'a': a, 'b': b, 'y_lo': ylo, 'y_hi': yhi})
+                    'ego': False, 'rule': None, 'a': a, 'b': b, 'y_lo': ylo, 'y_hi': yhi})
     return out
 
 
@@ -637,20 +655,29 @@ def ego_center(centers, lanes, w, width, mL=None, mR=None, axis=None, c=None,
     cx = w / 2.0 if axis is None else float(axis)
     ego_tol = (c.ego_tol if c is not None else 0.75)
 
+    # WHICH CORRIDOR IS OURS. With all-pairs pairing there can now be several -- that is the
+    # point (a branch you cannot see is a branch you cannot choose). The rule that picks is
+    # recorded in `rule`, and published, because a placeholder that does not say it is a
+    # placeholder is just a bug waiting to be inherited. There is no route logic here yet:
+    # `nearest` is a STAND-IN for the judgment layer, not a decision.
+    #
     # 1. The corridor bounded by the two lanes the TRACKER is following. Unambiguous, and it
     #    needs no geometry at all: identity across frames beats any single frame's layout.
     if mL is not None and mR is not None:
         for cc in centers:
             if cc['a'] is mL and cc['b'] is mR:
                 cc['ego'] = True
+                cc['rule'] = 'tracked'
                 return cc
     # 2. Otherwise the corridor whose centreline is NEAREST THE VEHICLE AXIS, and only if it
     #    is close enough to be one we could plausibly be in. This is the physical form of the
     #    old straddle test, and unlike it, it still works when the car is running wide.
+    #    At a branch this is where the route gets chosen -- by proximity, i.e. by accident.
     if centers and width > 0:
         best = min(centers, key=lambda x: abs(x['x_bottom'] - cx))
         if abs(best['x_bottom'] - cx) <= ego_tol * width:
             best['ego'] = True
+            best['rule'] = 'nearest'
             return best
     if width <= 0:
         return None
@@ -682,7 +709,7 @@ def ego_center(centers, lanes, w, width, mL=None, mR=None, axis=None, c=None,
     # clamp to the source lane's observed span so heading/curvature/drawing never
     # extrapolate the parabola beyond where the lane was actually detected.
     return {'coeffs': coeffs, 'x_bottom': xb, 'offset': xb - cx, 'ego': True,
-            'a': near, 'b': None, 'coast': True, 'flipped': flipped,
+            'a': near, 'b': None, 'coast': True, 'flipped': flipped, 'rule': 'coast',
             'y_lo': float(near['ys'].min()), 'y_hi': float(near['ys'].max())}
 
 
@@ -1049,6 +1076,8 @@ class LanePipeline:
         # (the cumulative sum) is built inside it, i.e. only on frames that actually coast.
         mask = cv2.bitwise_or(mw, my) if c.coast_flip_support > 0 else None
         centers = lane_centers(lanes, w, h, c, lane_w_px, axis)
+        n_corridors = len(centers)     # >1 = a BRANCH. Recorded, so the judgment layer that
+                                       # does not exist yet can be designed from real data.
         # `if self.trk.width` was the test, and a NEGATIVE width is truthy -- it sailed straight
         # through into `ego_center`, which then returned None on `width <= 0`. Belt and braces:
         # `_measure_width` can no longer produce one, and this can no longer pass one on.
@@ -1086,6 +1115,11 @@ class LanePipeline:
             'confidence': confidence, 'left_conf': left_conf,
             'right_conf': right_conf, 'curvature': curvature,
             'state': fstate, 'used_fallback': used_fb,
+            # Branch evidence, for the judgment layer that does not exist yet. `n_corridors`
+            # > 1 means the frame physically supports more than one route and something had
+            # to choose; `ego_rule` says WHICH placeholder chose. Neither is acted on.
+            'n_corridors': n_corridors,
+            'ego_rule': (ec.get('rule') or 'none') if ec is not None else 'none',
         }
         if debug:
             dbg = {'mw': mw, 'my': my, 'lanes': lanes, 'windows': windows, 'ec': ec,

@@ -20,3 +20,16 @@ float32 curvature        # relative curvature (NaN if !has_curvature)
 
 string  state            # OK / LOW_CONF / OUTLIER / HOLD / LOST
 bool    used_fallback    # coast (single-lane) fallback was used
+
+# --- branch evidence (recorded, NOT acted on) -------------------------------
+# There is no judgment layer yet. These two say what the frame SAW and which placeholder
+# rule picked a route, so the layer can be designed from measurements instead of guesses.
+uint8   n_corridors      # physically valid corridors this frame (35cm +-25%, real overlap).
+                         # > 1 = a BRANCH: more than one route is geometrically available.
+string  ego_rule         # which rule chose the ego corridor:
+                         #   tracked - the pair the Tracker was already following (identity)
+                         #   nearest - closest corridor to the vehicle axis  <- PLACEHOLDER.
+                         #             at a branch this picks the route BY PROXIMITY, i.e.
+                         #             by accident. This is where route logic goes.
+                         #   coast   - one boundary + an assumed lane width
+                         #   none    - no centreline this frame

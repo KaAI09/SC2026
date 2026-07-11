@@ -262,6 +262,8 @@ class PerceptionNode(Node):
         m.curvature = _nan(s['curvature'])
         m.state = str(s['state'])
         m.used_fallback = bool(s['used_fallback'])
+        m.n_corridors = int(min(255, s['n_corridors']))
+        m.ego_rule = str(s['ego_rule'])
         self.state_pub.publish(m)
 
     def _publish_debug(self, overlay, stamp):
@@ -292,7 +294,8 @@ class PerceptionNode(Node):
             f"[lane] {self.rate_hz:4.1f}Hz state={s['state']} center={f(s['center_error'])} "
             f"ema={f(s['ema'])} "
             f"heading={f(s['heading'])}[{s['heading_label']}] conf={s['confidence']:.2f} "
-            f"L/R={s['left_conf']:.2f}/{s['right_conf']:.2f}"
+            f"L/R={s['left_conf']:.2f}/{s['right_conf']:.2f} "
+            f"corridors={s['n_corridors']}[{s['ego_rule']}]"
             + (' FALLBACK' if s['used_fallback'] else '')
         )
 
