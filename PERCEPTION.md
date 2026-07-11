@@ -113,18 +113,34 @@ set 하면 다음 `cfg_to_px()` 호출에 덮어써진다.
 
 ## 5. state 계약 (LaneState)
 
-| 필드 | 의미 |
-|---|---|
-| `center_error` | 정규화 횡오차 [-1,1], + = 우측 (없으면 NaN, `valid`로 게이트) |
-| `ema` | center_error EMA |
-| `heading` / `heading_label` | ego 중앙선 접선각(deg) / `'ego'` |
-| `confidence`·`left_conf`·`right_conf` | 검출 신뢰도 |
-| `curvature`·`has_curvature` | ego 중앙선 곡률 |
-| `state` | OK/LOW_CONF/OUTLIER/HOLD/LOST |
-| `used_fallback` | coast(단일 차선) 사용 여부 |
+| 필드 | 의미 | 누가 쓰나 |
+|---|---|---|
+| `center_error` | 정규화 횡오차 [-1,1], + = 우측 (없으면 NaN, `valid` 로 게이트) | control |
+| `ema` | center_error EMA (`use_ema=True` 라 제어가 실제로 읽는 값) | control |
+| `state` | `OK`/`LOW_CONF`/`OUTLIER`/`HOLD`/`LOST` | control (throttle) |
+| `confidence` | **이산값**: 0.9(pair) / 0.5(coast) / 0.0(없음) | control (`conf_gate`) |
+| `used_fallback` | coast(단일 차선) 사용 여부 | 기록 |
+| **`n_corridors`** | **물리적으로 유효한 코리도어 수. `> 1` = 분기** | **(없음 — 판단 계층용)** |
+| **`ego_rule`** | **무엇이 골랐나: `tracked`/`nearest`/`coast`/`branch_*`/`none`** | **(없음 — 판단 계층용)** |
+| `heading` / `heading_label` | ego 중앙선 접선각(deg) | **아무도 안 씀** (C4/C5 만) |
+| `curvature` / `has_curvature` | ego 중앙선 곡률 | **아무도 안 씀** |
+| `left_conf` / `right_conf` | 0 또는 1 (binary) | **아무도 안 씀** |
 
-제어(`control_core`)가 이 state를 받아 조향·스로틀로 매핑한다 — 인지는 차량을
-조작하지 않는다.
+제어(`control_core`)가 이 state 를 받아 조향·스로틀로 매핑한다 — 인지는 차량을 조작하지 않는다.
+
+**`state` 는 이제 스로틀을 끊는다.** `LOST`/`HOLD` 는 물론이고 **`OUTLIER` 도** —
+`throttle_outlier: 0.0`. OUTLIER 는 "지금 내가 주는 `ema` 를 믿지 마라" 는 뜻이고, 코리도어
+전환 직후엔 부호까지 반대다. 145617 의 1.47초 역조향이 정확히 "인지는 알았는데 아무도 안
+물었다" 였다.
+
+**`n_corridors` / `ego_rule` 은 아직 아무것도 하지 않는다.** 분기가 실제로 보이는지, 그리고
+무엇이 경로를 고르고 있는지를 **기록만** 한다 — 판단 계층은 측정 위에 설계한다. `ego_rule` 이
+`nearest` 나 `branch_random` 이면 그것은 **결정이 아니라 자리표시자이고, 스스로 그렇게
+말하는 것**이다. §8+++ 참조.
+
+**7-label 분류(`W-L`, `YS-R`, ...)는 계약에 없다.** 디버그 오버레이 전용이고, 중앙선 도출에
+쓰이지 않는다. 코리도어의 경로 정체성은 **색 조합**이 말한다 (흰-흰 = 본선, 노랑-노랑 =
+노란 지름길; 흰-노랑은 페어가 될 수 없다 — §8+++).
 
 ## 6. 알려진 한계 — 0709 트랙 테스트 실측
 
