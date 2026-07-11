@@ -6,13 +6,18 @@ overlay image for monitoring. It NEVER commands the vehicle and does NOT record
 (recording is a separate recorder node).
 
 Topics:
-  sub : /camera/image/compressed  (sensor_msgs/CompressedImage)
+  sub : /camera/image/compressed  (sensor_msgs/CompressedImage)  BEST_EFFORT/1 = newest only
   pub : /lane/state               (dracer_msgs/LaneState)
-  pub : /lane/debug/compressed    (sensor_msgs/CompressedImage)  # 다패널 디버그(입력+ROI|mask|검출)
+  pub : /lane/debug/compressed    (sensor_msgs/CompressedImage)  # 다패널 디버그(BEV footprint|mask|검출)
 Params:
   profile ([perception] section seeds tuning), debug_scale, jpeg_quality, log_hz,
   publish_debug, plus every perception_core.Cfg field as a LIVE param
   (`ros2 param set` rebuilds the pipeline on change).
+
+The debug panel is built ONLY when `publish_debug` and someone is subscribed to it — it
+costs more than the whole detector, so it must never run just because it might be wanted.
+The CameraModel is rescaled to whatever resolution the camera actually publishes, so
+camera.yaml and vehicle_config can no longer silently disagree.
 """
 import math
 import os
@@ -100,14 +105,24 @@ class PerceptionNode(Node):
         self.pipeline = LanePipeline(self.cfg, self.cam)
         self.add_on_set_parameters_callback(self._on_set_params)
 
-        image_qos = QoSProfile(
+        # Camera IN: BEST_EFFORT / depth 1. Perception must always work on the NEWEST
+        # frame. With RELIABLE / depth 10 a slow frame does not drop -- it queues, and the
+        # node then steers the car from an image up to 10 frames stale. Dropping is the
+        # correct behaviour here; latency is the thing we cannot afford.
+        cam_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST, depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE,
+        )
+        # Debug OUT stays RELIABLE: the recorder subscribes RELIABLE, and a BEST_EFFORT
+        # publisher would be QoS-incompatible with it (= silently no recording).
+        debug_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST, depth=10,
             reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.VOLATILE,
         )
         self.sub = self.create_subscription(
-            CompressedImage, subscribe_topic, self.image_callback, image_qos)
+            CompressedImage, subscribe_topic, self.image_callback, cam_qos)
         self.state_pub = self.create_publisher(LaneState, state_topic, 10)
-        self.debug_pub = self.create_publisher(CompressedImage, self.debug_topic, image_qos)
+        self.debug_pub = self.create_publisher(CompressedImage, self.debug_topic, debug_qos)
 
         self._last_log = self.get_clock().now()
         self._log_period = 1.0 / self.log_hz if self.log_hz > 0 else 0.0
@@ -139,19 +154,49 @@ class PerceptionNode(Node):
             self.get_logger().info(f'perception live-update: {list(ov)}')
         return SetParametersResult(successful=True)
 
+    def _match_camera(self, frame):
+        """Keep the CameraModel on the resolution the camera ACTUALLY sends.
+
+        camera.yaml stores whatever size it was calibrated at; vehicle_config decides what
+        the camera publishes. When those drifted apart (yaml 320x240, camera 320x160) the
+        BEV LUT sampled rows the frame did not have and `to_bev` silently filled them with
+        black — it wiped out the near field, 26-37cm, precisely where the sliding window
+        hunts its base peaks, and detection collapsed with nothing in any log.
+
+        `rescale()` is exact (the GStreamer path is a pure videoscale, no crop), so simply
+        adapting is free. The runtime resolution becomes a knob you can A/B on the board
+        without touching the calibration.
+        """
+        h, w = frame.shape[:2]
+        if self.cam is None or tuple(self.cam.image_size) == (w, h):
+            return
+        old = self.cam.image_size
+        self.cam = self.cam.match((w, h))
+        self.pipeline = LanePipeline(self.cfg, self.cam)
+        self.get_logger().warning(
+            f'perception: 카메라가 {w}x{h} 를 보내는데 camera.yaml 은 '
+            f'{old[0]}x{old[1]} 기준이다 → 모델을 {w}x{h} 로 정확 rescale 했다. '
+            f'{self.cam.summary()}')
+
     def image_callback(self, msg: CompressedImage):
         frame = cv2.imdecode(np.frombuffer(msg.data, dtype=np.uint8), cv2.IMREAD_COLOR)
         if frame is None:
             self.get_logger().warning('Failed to decode compressed image')
             return
+        self._match_camera(frame)
 
-        if self.publish_debug:
-            # 다패널(입력+ROI | mask | 검출+상태) 합성 발행 → recorder가 이 영상을 저장
-            _, state, dbg = self.pipeline.process(frame, debug=True)
+        # Render ONLY when something is actually listening. The 4-panel composite plus its
+        # JPEG encode dwarfs the entire detection pipeline (which works on a 232x207 BEV),
+        # and it was running every frame even with no subscriber — that was the frame drop.
+        # drive.launch now points the monitor and the recorder at the raw camera, so this
+        # count is 0 while driving and the cost disappears; attach rqt (or point the
+        # recorder back at /lane/debug/compressed) and it switches itself on.
+        if self.publish_debug and self.debug_pub.get_subscription_count() > 0:
+            state, dbg = self.pipeline.process(frame, debug=True)
             self._publish_state(state, msg.header.stamp)
             self._publish_debug(render_panels(frame, dbg, self.cfg), msg.header.stamp)
         else:
-            _, state = self.pipeline.process(frame)
+            state = self.pipeline.process(frame)
             self._publish_state(state, msg.header.stamp)
         self._maybe_log(state)
 

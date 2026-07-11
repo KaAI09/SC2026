@@ -48,7 +48,10 @@ def generate_launch_description():
             vehicle_config,
             calibration_mode=False,
             use_joystick_control=False,     # actuator takes /control from control_node
-            image_topic='/lane/debug/compressed',   # perception running -> debug overlay
+            # RAW camera, not the debug panel. Every subscriber of /lane/debug/compressed
+            # forces perception to composite + JPEG-encode a 4-panel strip on the hot path;
+            # the monitor only needs to show the driver the road.
+            image_topic='/camera/image/compressed',
         ),
         Node(
             package='perception', executable='perception_node', name='perception_node',
@@ -61,9 +64,16 @@ def generate_launch_description():
             parameters=[{'profile': profile,
                          'engage': ParameterValue(engage, value_type=bool)}],
         ),
+        # Record the RAW camera + the LaneState csv, NOT the annotated panel. Together they
+        # reconstruct the panel exactly, offline, on a machine with cycles to spare — so the
+        # car never pays for rendering while it drives. With no panel subscriber left,
+        # perception's own subscriber check turns the overlay off by itself.
+        # To review the live overlay instead: image_topic:=/lane/debug/compressed
         Node(
             package='recorder', executable='recorder_node', name='recorder_node',
             output='screen',
-            parameters=[{'record_dir': record_dir}],
+            parameters=[{'record_dir': record_dir,
+                         'image_topic': '/camera/image/compressed',
+                         'raw_topic': ''}],
         ),
     ])

@@ -1,28 +1,38 @@
 """Pure (ROS-independent) lane-detection pipeline. Single source of truth.
 
-This is the FRONT-VIEW port of the offline 7-label probe (offline/lane7_probe.py):
-detect -> sliding-window multi-lane tracking -> 7-label classification -> ego
-corridor centerline (+ Tracker/coast). The ONE difference from the probe is that
-the probe's perspective warp (an uncalibrated ROI-trapezoid -> rectangle
-homography, a rough BEV) is REMOVED: the sliding window runs directly on the
-ROI-cropped front-view mask, so lane polynomials x=f(y) are already in image
-coordinates (no warp-back needed to draw).
+colour -> calibrated BEV -> sliding-window multi-lane tracking -> 7-label
+classification -> ego corridor centerline (+ Tracker/coast).
 
-A properly camera-calibrated BEV is a LATER, separate stage. When it lands, warp
-the color masks right before `sliding_window_lanes` and unwarp the fitted coeffs
-for drawing; every stage after detection is coordinate-agnostic and stays as-is.
-The seam is marked in `LanePipeline.process`.
+Stage order, and why (`LanePipeline.process` marks the seam):
+
+  colour   on the RAW frame, cropped to `cam.src_rows` -- the band the BEV actually
+           reads. A per-pixel colour test is cheaper and sharper before any resample,
+           and rows above that band feed no BEV cell at all.
+  warp     the two 1-channel masks (not the 3-channel frame).
+  shape    morphology, area gates, window sizes, lane width, pairing, coast, heading --
+           ALL of it after the warp, where a pixel IS a centimetre and a threshold means
+           the same thing at 26cm and at 78cm. `cfg_to_px` resolves the cm config to BEV
+           px once; every stage below it keeps taking plain pixels.
+
+With a CameraModel the LUT is itself a calibrated trapezoid crop, so the legacy
+hand-tuned `roi_*` trapezoid is redundant and is skipped. Without one (cam=None) the
+front-view path is unchanged, thresholds keep their legacy screen-space meaning, and
+PERCEPTION.md §6 limitations apply.
 
 Imported by BOTH the online perception node and the offline control tools
 (offline/control_predict.py). Depends only on cv2 + numpy.
 
 Usage:
     from dracer_core.perception_core import LanePipeline, Cfg, cfg_from_profile
-    pipe = LanePipeline(cfg_from_profile(profile['perception']))   # or Cfg()
-    overlay_bgr, state = pipe.process(frame_bgr)   # state: dict (center_error, ...)
+    pipe = LanePipeline(cfg_from_profile(profile['perception']), cam)   # cam: CameraModel
+    state = pipe.process(frame_bgr)                 # dict (center_error, ...)
+    state, dbg = pipe.process(frame_bgr, debug=True)   # dbg -> render_panels()
+
+`process()` returns ONLY the lane state. Rendering is never on its hot path: build the
+debug image with `render_panels(frame, dbg, cfg)`, and only when something is watching.
 
 The pipeline NEVER commands the vehicle; it only produces a lane-state estimate
-(consumed by the control stage) and a debug overlay.
+(consumed by the control stage).
 """
 from collections import deque
 from dataclasses import dataclass, fields, replace
@@ -107,6 +117,16 @@ class Cfg:
                                      # In the BEV this is a REAL sideways drift; in the front
                                      # view perspective convergence faked it (limitation §6a).
 
+    # Thresholds that count PIXELS rather than measuring a distance. They were the last
+    # scale trap left in the config: a pixel COUNT scales with px_per_cm SQUARED (an area),
+    # so halving the BEV scale quarters every count while the threshold stays put, and
+    # detection dies with nothing in the log. Expressed as areas/lengths they are immune.
+    # Defaults reproduce the old px values EXACTLY at px_per_cm = 4.
+    morph_cm: float = 1.25           # vertical CLOSE kernel  (was morph_v = 5 px)
+    sw_minpix_cm2: float = 1.125     # min lane area in a window (was sw_minpix = 18 px)
+    sw_peak_min_cm: float = 2.5      # min histogram peak, a LENGTH (was sw_peak_min = 10 px)
+    gate_min_cm2: float = 5.0        # colour-gate floor, an area (was gate_min_px = 80 px)
+
 
 _FIELDS = {f.name for f in fields(Cfg)}
 
@@ -144,6 +164,11 @@ def cfg_to_px(cfg, cam):
         merge_dx=cfg.merge_dx_cm * s,
         pair_gap_min=cfg.pair_gap_min_cm * s,
         jump_max=cfg.jump_max_cm * s,
+        # Pixel COUNTS -> areas (s^2); the histogram peak is a length (s).
+        morph_v=max(3, int(round(cfg.morph_cm * s))),
+        sw_minpix=max(4, int(round(cfg.sw_minpix_cm2 * s * s))),
+        sw_peak_min=max(3, int(round(cfg.sw_peak_min_cm * s))),
+        gate_min_px=max(8, int(round(cfg.gate_min_cm2 * s * s))),
         # Tracker reads `lane_width_default * W` as its fallback width, so express the
         # REAL lane width as that fraction. The old 0.5 was a guess with no physical
         # meaning — it is what made every coast produce |center_error| ~= 0.5 (§6c).
@@ -166,7 +191,10 @@ EGO_CENTER_COLOR = (255, 255, 0)   # cyan — ego corridor centerline (control v
 # ==========================================================================
 # A: detection (HSV white/yellow masks + morphology + color-dominance gate)
 # ==========================================================================
-def detect(frame, c):
+def color_masks(frame, c):
+    """Per-pixel HSV colour test. No morphology, no gate -- those are SHAPE and AREA
+    judgements, and in the front view neither has a stable meaning (a 5px kernel spans
+    1cm of tarmac up close and 5cm at the far edge). They belong after the warp."""
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     H, S, V = cv2.split(hsv)
     white = ((S <= c.white_s_max) & (V >= c.white_v_min)).astype(np.uint8) * 255
@@ -176,6 +204,17 @@ def detect(frame, c):
         white[:] = 0
     if 'yellow' not in c.colors:
         yellow[:] = 0
+    return white, yellow
+
+
+def morph_gate(white, yellow, c):
+    """Vertical CLOSE + colour-dominance gate.
+
+    Run on the BEV, `morph_v` is a REAL length (cfg.morph_cm) that means the same thing
+    at 26cm and at 78cm, and it also heals the row-replication the nearest-neighbour warp
+    leaves behind. `gate_min_px` likewise becomes a real area. On the front view (cam=None)
+    both keep their legacy screen-space meaning.
+    """
     kv = cv2.getStructuringElement(cv2.MORPH_RECT, (3, max(3, c.morph_v)))
     white = cv2.morphologyEx(white, cv2.MORPH_CLOSE, kv)
     yellow = cv2.morphologyEx(yellow, cv2.MORPH_CLOSE, kv)
@@ -187,6 +226,11 @@ def detect(frame, c):
         if yc / tot < c.color_gate:
             yellow[:] = 0
     return white, yellow
+
+
+def detect(frame, c):
+    """Front-view detection (legacy path + offline probes): colour, then shape."""
+    return morph_gate(*color_masks(frame, c), c)
 
 
 # ==========================================================================
@@ -564,26 +608,38 @@ class LanePipeline:
         self._size = None
 
     def process(self, bgr, debug=False):
-        """Run one frame. Returns (overlay, state); with debug=True also a third
-        dict of intermediates for render_panels (masks, lanes, windows, ec, ...)."""
+        """Run one frame. Returns `state`; with debug=True returns (state, dbg), the
+        second being intermediates for render_panels (masks, lanes, windows, ec, ...)."""
         c = self.c
         h, w = bgr.shape[:2]
 
-        white, yellow = detect(bgr, c)
-        roi, y0, trap = _roi_mask(h, w, c)
-        mw = cv2.bitwise_and(white, roi)
-        my = cv2.bitwise_and(yellow, roi)
-
         # --- BEV seam --------------------------------------------------------
-        # Warp the COLOR MASKS (not the frame): detection is a per-pixel colour test,
-        # so it is cheaper and sharper before resampling. Everything after this point
-        # is coordinate-agnostic and needs no change — it just gets metric pixels.
+        # Warp the COLOR MASKS, not the frame: colour is a per-pixel test, so thresholding
+        # before the resample is both cheaper (2 x 1ch out vs 1 x 3ch) and sharper (no
+        # interpolated in-between colours to fool the HSV gates). Everything after the warp
+        # is coordinate-agnostic — it just starts getting metric pixels.
         if self.cam is not None:
+            # The LUT already crops the ground to a calibrated trapezoid, so the hand-tuned
+            # `roi_*` one is redundant: measured against this camera it removes a further
+            # 3.7% of the valid BEV and nothing else. Dropping it also drops a fillPoly and
+            # two full-frame bitwise_ands. Rows above the LUT's top feed NO BEV cell, so
+            # colour-test only the band it reads (~38% fewer pixels through cvtColor).
+            r0, r1 = self.cam.src_rows
+            mw = np.zeros((h, w), np.uint8)
+            my = np.zeros((h, w), np.uint8)
+            mw[r0:r1], my[r0:r1] = color_masks(bgr[r0:r1], c)
             mw = self.cam.to_bev(mw)
             my = self.cam.to_bev(my)
+            # Shape + area judgements now that a pixel IS a length.
+            mw, my = morph_gate(mw, my, c)
             w, h = self.cam.bev_size
             lane_w_px = self.cam.lane_width_px(c.lane_width_cm)
+            trap, y0 = self.cam.footprint_poly(), r0
         else:
+            white, yellow = detect(bgr, c)
+            roi, y0, trap = _roi_mask(h, w, c)
+            mw = cv2.bitwise_and(white, roi)
+            my = cv2.bitwise_and(yellow, roi)
             lane_w_px = 0.0                   # no physical gate in the front view
         if self._size != (h, w):
             self._size = (h, w)
@@ -620,15 +676,14 @@ class LanePipeline:
             'right_conf': right_conf, 'curvature': curvature,
             'state': fstate, 'used_fallback': used_fb,
         }
-        overlay = _render_single(bgr, lanes, ec, w, ema, heading, fstate, self.cam)
         if debug:
             dbg = {'mw': mw, 'my': my, 'lanes': lanes, 'windows': windows, 'ec': ec,
                    'trap': trap, 'y0': y0, 'ema': ema, 'fstate': fstate,
                    'center_error': center_error, 'heading': heading,
                    'confidence': confidence, 'used_fb': used_fb, 'cam': self.cam,
                    'bev_size': (w, h)}
-            return overlay, state, dbg
-        return overlay, state
+            return state, dbg
+        return state
 
 
 # ==========================================================================
@@ -659,29 +714,6 @@ def _draw_fit(img, coeffs, y0, y1, color, thick, cam):
                   if 0 <= x < w and 0 <= y < h], np.int32)
     if len(p) > 1:
         cv2.polylines(img, [p], False, color, thick)
-
-
-def _render_single(bgr, lanes, ec, w, ema, heading, fstate, cam=None):
-    img = bgr.copy()
-    for ins in lanes:
-        if ins['coeffs'] is None:
-            continue
-        col = LABEL_COLORS.get(classify(ins, w), (0, 255, 0))
-        _draw_fit(img, ins['coeffs'], *_lane_span(ins), col, 2, cam)
-    if ec is not None:
-        _draw_fit(img, ec['coeffs'], ec.get('y_lo', 0),
-                  ec.get('y_hi', (cam.bev_size[1] - 1) if cam else img.shape[0] - 1),
-                  EGO_CENTER_COLOR, 2, cam)
-    if ec is None:
-        off = '--'
-    elif cam is not None:
-        off = f"{ec['offset'] / cam.px_per_cm:+.1f}cm{'(coast)' if ec.get('coast') else ''}"
-    else:
-        off = f"{ec['offset']:+.0f}px{'(coast)' if ec.get('coast') else ''}"
-    txt = f"off {off} ema {'n/a' if ema is None else f'{ema:+.2f}'} {fstate}"
-    cv2.putText(img, txt, (4, img.shape[0] - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.4,
-                EGO_CENTER_COLOR, 1)
-    return img
 
 
 def _panel(img, title):

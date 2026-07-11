@@ -64,6 +64,7 @@ class CameraModel:
     ground_rms_px: float = float('nan')   # homography reprojection error
     square_mm: float = float('nan')       # MEASURED checker size used (not the nominal one)
     _maps: tuple = field(default=None, repr=False, compare=False)
+    _rows: tuple = field(default=None, repr=False, compare=False)
 
     # ---------------------------------------------------------------- geometry
     @property
@@ -122,11 +123,56 @@ class CameraModel:
         self._maps = (np.ascontiguousarray(raw[..., 0]), np.ascontiguousarray(raw[..., 1]))
         return self._maps
 
+    @property
+    def src_rows(self):
+        """(row_lo, row_hi) of the raw frame that the BEV actually samples.
+
+        The LUT reads a trapezoid of the ground; everything above its top row feeds no
+        BEV cell at all. Colour-thresholding outside this band is pure waste, so the
+        pipeline crops `detect()` to it. Cached with the maps.
+        """
+        if self._rows is None:
+            mx, my = self._maps or self._build_maps()
+            w, h = self.image_size
+            inb = (mx >= 0) & (mx < w) & (my >= 0) & (my < h)
+            if not inb.any():                 # degenerate model -> no crop
+                self._rows = (0, h)
+            else:
+                ys = my[inb]
+                self._rows = (max(0, int(np.floor(ys.min()))),
+                              min(h, int(np.ceil(ys.max())) + 1))
+        return self._rows
+
+    def footprint_poly(self):
+        """The BEV rectangle drawn back onto the camera frame (4 corners, raw px).
+
+        This is the REAL region perception reads -- the calibrated replacement for the
+        hand-tuned ROI trapezoid. Corners can fall outside the frame (the near field is
+        wider than the lens sees); cv2.polylines clips, and the caller only draws it.
+        """
+        bw, bh = self.bev_size
+        return self.bev_to_image(
+            [(0, 0), (bw - 1, 0), (bw - 1, bh - 1), (0, bh - 1)]).astype(np.float32)
+
     def to_bev(self, img, nearest=True):
         """Raw camera image (or a mask) -> BEV. Undistort + warp in one resample.
 
         Masks MUST use nearest (default) so a binary mask stays binary.
+
+        The size guard is NOT paranoia. The LUT holds absolute pixel coordinates for
+        `image_size`; hand it a frame of another size and `cv2.remap` does not fail --
+        every out-of-range sample silently returns borderValue=0. A 320x240 model fed
+        320x160 frames blackened the BOTTOM 65 BEV rows (the near field, 26-37cm), which
+        is exactly where the sliding window looks for its base peaks. Detection collapsed
+        with no error anywhere. Fail loudly instead; use `match()` to adapt.
         """
+        h, w = img.shape[:2]
+        if (w, h) != tuple(self.image_size):
+            raise ValueError(
+                f'to_bev: 프레임 {w}x{h} != 캘리브 해상도 '
+                f'{self.image_size[0]}x{self.image_size[1]}. '
+                'CameraModel.match((w, h)) 로 정합한 모델을 써라 '
+                '(무시하면 BEV 근거리가 조용히 검게 날아간다).')
         mx, my = self._maps or self._build_maps()
         return cv2.remap(img, mx, my,
                          cv2.INTER_NEAREST if nearest else cv2.INTER_LINEAR,
@@ -231,6 +277,17 @@ class CameraModel:
             rms_px=self.rms_px, ground_rms_px=self.ground_rms_px,
             square_mm=self.square_mm)
         return m
+
+    def match(self, img_size):
+        """Return a model calibrated for `img_size` -- self if it already is.
+
+        Makes the runtime resolution a FREE KNOB: camera.yaml can be stored at whatever
+        size it was calibrated at, and perception adapts to whatever the camera actually
+        publishes. `rescale()` is exact (pure GStreamer videoscale, no crop), so this
+        costs nothing in accuracy and removes the whole class of "yaml says 240, camera
+        sends 160" bugs.
+        """
+        return self if tuple(img_size) == tuple(self.image_size) else self.rescale(img_size)
 
     # ---------------------------------------------------------------- io
     @classmethod

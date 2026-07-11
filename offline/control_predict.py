@@ -53,7 +53,7 @@ def run(video, csv_path, cfg, controllers, out_path):
     out_rows = []
     prev_t = None
     for i, frame in enumerate(cm.iter_frames(video)):
-        _, st, _ = pipe.process(frame, debug=True)
+        st = pipe.process(frame)
         t = ftime[i] if i < len(ftime) and ftime[i] == ftime[i] else float(i)
         dt = (t - prev_t) if (prev_t is not None and t > prev_t) else 0.0
         prev_t = t
