@@ -30,6 +30,9 @@ perception:
   track_width_tol: 0.0    # 0712: 0.25. 0 = Tracker 폭 측정을 무조건 수용 (구 동작).
   coast_flip_support: 0.0 # 0712: 0.15. 0 = coast 좌/우를 마스크로 반증하지 않음 (구 동작).
                           # coast 가 이상하면(차선폭만큼 튀면) 여기부터 꺼 보라.
+  pair_same_color: false  # 0712: true. false = 흰-노랑도 페어로 인정 (구 동작).
+  pair_parallel_cm: 0.0   # 0712: 8.0. 0 = 평행도를 ego 선택에 쓰지 않음 (구 동작).
+  branch_policy: keep     # 0712 기본값도 keep 이다 (= 구 동작). random/nearest 는 실험용.
 
 control:
   controller: C2

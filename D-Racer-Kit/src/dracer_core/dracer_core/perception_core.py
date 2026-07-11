@@ -37,6 +37,7 @@ from collections import deque
 from dataclasses import dataclass, fields, replace
 import itertools
 import math
+import random
 
 import cv2
 import numpy as np
@@ -75,9 +76,55 @@ class Cfg:
     heading_frac: float = 0.06   # |top-bottom x| >= this*W -> turn by heading
     curv_strong: float = 0.0015  # near-vertical but |a| >= this -> turn by curvature
     straight_thresh: float = 0.0006
-    # pairing (adjacent left/right boundary -> centerline)
+    # pairing (left/right boundary -> centerline)
     pair_overlap_min: float = 0.30
     pair_gap_min: float = 12.0
+    pair_same_color: bool = True   # a white line and a yellow line are NOT the two boundaries
+                                   # of one lane. On this track the main lane is bounded
+                                   # white-white and the yellow shortcut yellow-yellow; a
+                                   # white/yellow pair is two boundaries of DIFFERENT routes
+                                   # that happen to be a lane width apart where they cross.
+                                   # `pair_width_tol` cannot catch it -- both really are 35cm.
+                                   # Measured: W-Y = 6.2% of all corridors, but 42.7% of the
+                                   # corridors formed AT A BRANCH, which is exactly where a
+                                   # wrong corridor costs a route.
+    pair_parallel_cm: float = 8.0  # "am I IN this corridor", NOT "is this a corridor".
+                                   # `spread` = max gap - min gap over the overlap: how far
+                                   # from parallel the two boundaries are. A corridor whose
+                                   # boundaries SPLAY is not a bad corridor -- it is a FORK,
+                                   # a route peeling away from us, and we have not taken it.
+                                   # Measured at the yellow branch: 21 of 21 two-corridor
+                                   # frames give [A,B] + [B,C] SHARING a boundary (= a fork),
+                                   # with the one we are in parallel (spread p50 3.2cm) and
+                                   # the one we are not splaying (p50 32.7cm).
+                                   #
+                                   # So it is NOT a pairing gate. Gating on it deleted the
+                                   # branch outright -- 12cm took the yellow fork from 52% of
+                                   # its frames to 0%, and the judgment layer would have had
+                                   # nothing to judge. `lane_centers` keeps every corridor;
+                                   # `ego_center` only refuses to call a splaying one the lane
+                                   # we are currently DRIVING DOWN.
+                                   #
+                                   # Same-colour p90 = 5.7cm, so 8cm admits the lane we are in
+                                   # and refuses the fork. <= 0 disables.
+    pair_parallel: float = 32.0  # DERIVED from pair_parallel_cm by cfg_to_px. Do not set.
+    # branch policy — PLACEHOLDER for the judgment layer that does not exist yet
+    branch_policy: str = 'keep'  # what to do when >1 corridor is physically available:
+                                 #   keep   - carry on with the corridor the Tracker already
+                                 #            has (measured: this is what happens today, 98%
+                                 #            of branch frames). The car can NEVER take the
+                                 #            yellow shortcut. Current behaviour; default.
+                                 #   random - pick one at random. A PLACEHOLDER, for seeing
+                                 #            what a route change does. Seeded (branch_seed)
+                                 #            so a replay is reproducible.
+                                 #   nearest- the corridor closest to the vehicle axis, i.e.
+                                 #            by proximity, i.e. by accident.
+                                 # Whatever picks, it is LATCHED for the length of the branch
+                                 # and pushed into the Tracker (adopt). A per-frame choice
+                                 # oscillates by a full lane width -- measured, not feared:
+                                 # that is exactly what a per-frame `coast_side` flip did
+                                 # (§8+), 0 oscillations -> 3.
+    branch_seed: int = 0         # branch_policy='random' seed. Replays must be reproducible.
     ego_tol: float = 0.6         # a corridor is the EGO corridor if its centreline sits within
                                  # this many lane widths of the vehicle axis. 0.5 = "the axis is
                                  # strictly inside it"; 0.6 leaves slack for a car running wide.
@@ -209,7 +256,7 @@ def cfg_from_profile(section=None):
 # exactly like the knobs you would reach for when detection misbehaves trackside. The real
 # knobs are the `_cm` twins: sw_margin_cm, jump_max_cm, merge_dx_cm, ...
 DERIVED_PX = frozenset({
-    'sw_margin', 'sw_peak_sep', 'merge_dx', 'pair_gap_min', 'jump_max',
+    'sw_margin', 'sw_peak_sep', 'merge_dx', 'pair_gap_min', 'jump_max', 'pair_parallel',
     'morph_v', 'sw_minpix', 'sw_peak_min', 'gate_min_px',
     'lane_width_default', 'heading_frac',
 })
@@ -238,6 +285,7 @@ def cfg_to_px(cfg, cam):
         sw_peak_sep=max(4, int(round(cfg.sw_peak_sep_cm * s))),
         merge_dx=cfg.merge_dx_cm * s,
         pair_gap_min=cfg.pair_gap_min_cm * s,
+        pair_parallel=cfg.pair_parallel_cm * s,
         jump_max=cfg.jump_max_cm * s,
         # Pixel COUNTS -> areas (s^2); the histogram peak is a length (s).
         morph_v=max(3, int(round(cfg.morph_cm * s))),
@@ -487,6 +535,9 @@ def _pair_gate(a, b, h, c, lane_w_px=0.0):
     yellow one across the wrong corridor (§6b). In a metric BEV the gap is constant, so
     "is this really a lane width apart?" is a question we can finally ask.
     """
+    # Same COLOUR. Different tapes bound different routes (see Cfg.pair_same_color).
+    if c.pair_same_color and a['color'] != b['color']:
+        return None
     ylo = max(int(a['ys'].min()), int(b['ys'].min()))
     yhi = min(int(a['ys'].max()), int(b['ys'].max()))
     if yhi - ylo < c.pair_overlap_min * h:
@@ -498,7 +549,24 @@ def _pair_gate(a, b, h, c, lane_w_px=0.0):
     if lane_w_px > 0:
         if abs(float(gaps.mean()) - lane_w_px) > c.pair_width_tol * lane_w_px:
             return None                      # not a lane width apart -> not one corridor
-    return ylo, yhi
+    # `spread` = how far from PARALLEL the two boundaries are (max gap - min gap over the
+    # overlap). Reported, NOT gated on -- and that distinction is the whole point.
+    #
+    # A splaying pair is not a bad corridor. It is a FORK. Measured at the yellow branch
+    # (frames with 3+ yellow lanes): 21 of 21 frames that produce two corridors produce them
+    # as [A,B] and [B,C] -- SHARING a boundary, which is what a fork IS. And the second one
+    # always splays (spread p50 = 32.7cm) while the first is parallel (p50 = 3.2cm):
+    #
+    #     corridor A   spread  3.2cm, width 34cm   <- the lane we are IN
+    #     corridor B   spread 32.7cm, width 28cm   <- the route we have NOT taken yet
+    #
+    # Of course B splays: it is peeling away from us. Gating it out deletes the branch --
+    # measured, a 12cm parallel gate took the yellow fork from 52% of its frames to 0%. The
+    # judgment layer would have had nothing to judge.
+    #
+    # So parallelism is not "is this a corridor", it is "am I IN this corridor". `ego_center`
+    # uses it for that; `n_corridors` counts them all.
+    return ylo, yhi, float(gaps.max() - gaps.min())
 
 
 def lane_centers(lanes, w, h, c, lane_w_px=0.0, axis=None):
@@ -546,11 +614,12 @@ def lane_centers(lanes, w, h, c, lane_w_px=0.0, axis=None):
         ov = _pair_gate(a, b, h, c, lane_w_px)
         if ov is None:
             continue
-        ylo, yhi = ov
+        ylo, yhi, spread = ov
         coeffs = tuple((p + q) / 2.0 for p, q in zip(a['coeffs'], b['coeffs']))
         x_bottom = float(_ebottom(coeffs, yhi))
         out.append({'coeffs': coeffs, 'x_bottom': x_bottom, 'offset': x_bottom - cx,
-                    'ego': False, 'rule': None, 'a': a, 'b': b, 'y_lo': ylo, 'y_hi': yhi})
+                    'ego': False, 'rule': None, 'spread': spread,
+                    'a': a, 'b': b, 'y_lo': ylo, 'y_hi': yhi})
     return out
 
 
@@ -640,6 +709,28 @@ def coast_side(near, dx, mask, c, margin, cx):
     return -dx, True
 
 
+def choose_branch(centers, cx, c, rng):
+    """WHICH ROUTE. This is the judgment layer's seat, and the judgment layer is not here yet.
+
+    Everything in this file up to now answers "where are the lanes". This answers "which of
+    the available routes do we take", and that is a MISSION question -- yellow shortcut or
+    main line, roundabout exit 1 or 2 -- which no amount of geometry can settle. So it does
+    not pretend to: it applies a named placeholder and SAYS which one, in `LaneState.ego_rule`.
+
+    `keep` (default) reproduces today's behaviour exactly: the Tracker carries the corridor it
+    already had, so the car simply stays in its lane and can NEVER take the shortcut. Measured
+    over the 0711 clips: at the 218 branch frames, `tracked` won 98% of the time. The system
+    does not choose. It continues.
+
+    Returns None for `keep` (let the Tracker decide), else the chosen corridor.
+    """
+    if not centers or c.branch_policy == 'keep':
+        return None
+    if c.branch_policy == 'random':
+        return centers[rng.randrange(len(centers))]
+    return min(centers, key=lambda x: abs(x['x_bottom'] - cx))          # 'nearest'
+
+
 def ego_center(centers, lanes, w, width, mL=None, mR=None, axis=None, c=None,
                mask=None, margin=0.0):
     """Ego corridor centreline: a real left/right pair, else COAST off one boundary.
@@ -673,8 +764,13 @@ def ego_center(centers, lanes, w, width, mL=None, mR=None, axis=None, c=None,
     #    is close enough to be one we could plausibly be in. This is the physical form of the
     #    old straddle test, and unlike it, it still works when the car is running wide.
     #    At a branch this is where the route gets chosen -- by proximity, i.e. by accident.
-    if centers and width > 0:
-        best = min(centers, key=lambda x: abs(x['x_bottom'] - cx))
+    # You can only BE IN a corridor whose boundaries are parallel. A splaying one is a fork
+    # you have not taken (see `_pair_gate`). It stays in `centers` -- the judgment layer needs
+    # to see it -- but it is not something the car is currently driving down.
+    inlane = [x for x in centers
+              if c is None or c.pair_parallel <= 0 or x.get('spread', 0.0) <= c.pair_parallel]
+    if inlane and width > 0:
+        best = min(inlane, key=lambda x: abs(x['x_bottom'] - cx))
         if abs(best['x_bottom'] - cx) <= ego_tol * width:
             best['ego'] = True
             best['rule'] = 'nearest'
@@ -1033,6 +1129,8 @@ class LanePipeline:
         self.stab = _Stabilizer(self.c)
         self.trk = None
         self._size = None
+        self._in_branch = False               # latch: a route is chosen ONCE per branch
+        self._rng = random.Random(self.c.branch_seed)   # seeded: a replay must reproduce
 
     def process(self, bgr, debug=False):
         """Run one frame. Returns `state`; with debug=True returns (state, dbg), the
@@ -1078,6 +1176,23 @@ class LanePipeline:
         centers = lane_centers(lanes, w, h, c, lane_w_px, axis)
         n_corridors = len(centers)     # >1 = a BRANCH. Recorded, so the judgment layer that
                                        # does not exist yet can be designed from real data.
+
+        # --- branch: pick a route, ONCE, and stick to it ----------------------
+        # LATCHED. Choosing afresh every frame swings center_error by a full lane width every
+        # frame -- that is not a hypothesis, it is what a per-frame `coast_side` flip measured
+        # (0 oscillations -> 3, §8+). So: decide on ENTRY to the branch, push the decision into
+        # the Tracker (`adopt`), and let the Tracker's identity carry it. The latch clears when
+        # the branch does.
+        branch_pick = None
+        if n_corridors >= 2:
+            if not self._in_branch:
+                self._in_branch = True
+                branch_pick = choose_branch(centers, axis, c, self._rng)
+        else:
+            self._in_branch = False
+        if branch_pick is not None:
+            mL, mR = branch_pick['a'], branch_pick['b']     # ego_center picks this up as
+            self.trk.adopt(mL, mR)                          # 'tracked' -- and STAYS there
         # `if self.trk.width` was the test, and a NEGATIVE width is truthy -- it sailed straight
         # through into `ego_center`, which then returned None on `width <= 0`. Belt and braces:
         # `_measure_width` can no longer produce one, and this can no longer pass one on.
@@ -1119,7 +1234,8 @@ class LanePipeline:
             # > 1 means the frame physically supports more than one route and something had
             # to choose; `ego_rule` says WHICH placeholder chose. Neither is acted on.
             'n_corridors': n_corridors,
-            'ego_rule': (ec.get('rule') or 'none') if ec is not None else 'none',
+            'ego_rule': (f'branch_{c.branch_policy}' if (branch_pick is not None and ec is branch_pick)
+                         else ((ec.get('rule') or 'none') if ec is not None else 'none')),
         }
         if debug:
             dbg = {'mw': mw, 'my': my, 'lanes': lanes, 'windows': windows, 'ec': ec,

@@ -32,6 +32,9 @@ ros2 launch dracer_bringup drive.launch.py \
 | `steer_max` | `0.8` | `0.7` | **[P]** `0.8` | 아니오 (실측 max \|u\|=0.528) |
 | `track_width_tol` | 없음(=무제한) | `0.25` | **[P]** `0.0` | 아니오 (1,505프레임 중 0회 발동) |
 | `coast_flip_support` | 없음 | `0.15` | **[P]** `0.0` | 예 (1,505프레임 중 **1회** 발동) |
+| `pair_same_color` | 없음(=무제한) | `true` | **[P]** `false` | 예 (흰-노랑 ego 35 → 0) |
+| `pair_parallel_cm` | 없음 | `8.0` | **[P]** `0.0` | 예 (ego 선택에만 사용, 페어링 게이트 아님) |
+| `branch_policy` | 없음 | `keep` | — | **아니오 — 기본값이 구 동작이다** |
 | `slew_rate` → `slew_rate_per_sec` | `0.15`/step | `4.5`/sec | **[P]** `4.5` | 아니오 (30Hz에서 동일) |
 | `dt_max` | 없음 | `0.1` | **[P]** `10.0` | 아니오 (30Hz에서 dt=0.033) |
 | `command_hz` | `10.0` | `30.0` | **[L]** `10.0` | 예 (지연 감소) |
@@ -50,6 +53,8 @@ ros2 param set /control_node    steer_max          0.8
 ros2 param set /perception_node outlier_relatch    6
 ros2 param set /perception_node track_width_tol    0.0
 ros2 param set /perception_node coast_flip_support 0.0  # coast 좌/우 마스크 반증 끄기
+ros2 param set /perception_node pair_same_color    false # 흰-노랑 페어 다시 허용
+ros2 param set /perception_node pair_parallel_cm   0.0   # 평행도를 ego 선택에서 빼기
 ros2 param set /control_node    state_timeout    0.0    # 워치독 끄기 (권장하지 않음)
 ros2 param set /control_node    joystick_timeout 0.0
 ```
