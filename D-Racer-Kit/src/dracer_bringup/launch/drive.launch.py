@@ -20,17 +20,23 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
-from dracer_bringup.launch_common import (base_nodes, default_profile_path,
+from dracer_bringup.launch_common import (base_nodes, default_camera_path,
+                                          default_profile_path,
                                           default_record_dir, vehicle_config_path)
 
 
 def generate_launch_description():
     vehicle_config = vehicle_config_path()
     profile = LaunchConfiguration('profile')
+    camera = LaunchConfiguration('camera')
     record_dir = LaunchConfiguration('record_dir')
     engage = LaunchConfiguration('engage')
 
     return LaunchDescription([
+        DeclareLaunchArgument(
+            'camera', default_value=default_camera_path(),
+            description='camera calibration YAML -> metric BEV. Empty string = front-view '
+                        '(legacy; PERCEPTION.md §6 limitations apply)'),
         DeclareLaunchArgument('profile', default_value=default_profile_path(),
                               description='driving profile YAML ([perception] + [control])'),
         DeclareLaunchArgument('record_dir', default_value=default_record_dir(),
@@ -47,7 +53,7 @@ def generate_launch_description():
         Node(
             package='perception', executable='perception_node', name='perception_node',
             output='screen',
-            parameters=[{'profile': profile}],
+            parameters=[{'profile': profile, 'camera': camera}],
         ),
         Node(
             package='control', executable='control_node', name='control_node',

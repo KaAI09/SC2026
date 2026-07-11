@@ -27,6 +27,7 @@ from rcl_interfaces.msg import SetParametersResult
 from sensor_msgs.msg import CompressedImage
 from dracer_msgs.msg import LaneState
 
+from dracer_core.calib import CameraModel
 from dracer_core.perception_core import Cfg, LanePipeline, cfg_from_profile, render_panels
 from dracer_core.profile import load_profile, section
 
@@ -43,6 +44,7 @@ class PerceptionNode(Node):
         self.declare_parameter('state_topic', '/lane/state')
         self.declare_parameter('debug_topic', '/lane/debug/compressed')
         self.declare_parameter('profile', '')      # [perception] section applied
+        self.declare_parameter('camera', '')       # camera.yaml -> metric BEV ('' = front-view)
         self.declare_parameter('jpeg_quality', 80)
         self.declare_parameter('debug_scale', 2.0)
         self.declare_parameter('log_hz', 2.0)
@@ -78,8 +80,24 @@ class PerceptionNode(Node):
             self.declare_parameter(name, val)
         if profile_path:
             self.get_logger().info(f'perception: loaded profile {profile_path}')
+
+        # Calibrated camera -> metric BEV. Absent/unreadable -> front-view (legacy),
+        # so a missing camera.yaml degrades instead of taking the vehicle down.
+        cam_path = os.path.expanduser(str(gp('camera').value))
+        self.cam = None
+        if cam_path:
+            try:
+                self.cam = CameraModel.load(cam_path)
+                self.get_logger().info(f'perception: BEV {self.cam.summary()}')
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().error(
+                    f'perception: camera.yaml 로드 실패 ({cam_path}): {exc} '
+                    '— front-view 로 계속한다')
+        else:
+            self.get_logger().warning('perception: camera 파라미터 없음 → front-view '
+                                      '(BEV 미적용, PERCEPTION.md §6 한계 그대로)')
         self.cfg = self._build_cfg()
-        self.pipeline = LanePipeline(self.cfg)
+        self.pipeline = LanePipeline(self.cfg, self.cam)
         self.add_on_set_parameters_callback(self._on_set_params)
 
         image_qos = QoSProfile(
@@ -117,7 +135,7 @@ class PerceptionNode(Node):
         if {p.name for p in params} & set(self._cfg_fields):
             ov = {p.name: p.value for p in params if p.name in self._cfg_fields}
             self.cfg = self._build_cfg(ov)
-            self.pipeline = LanePipeline(self.cfg)
+            self.pipeline = LanePipeline(self.cfg, self.cam)
             self.get_logger().info(f'perception live-update: {list(ov)}')
         return SetParametersResult(successful=True)
 

@@ -35,7 +35,12 @@
     grep -E "IMAGE_(WIDTH|HEIGHT)" src/config/vehicle_config.yaml   # 320 / 160 확인
 
   1) K·D : 보드를 카메라 정면으로 들고 여러 각도·거리로 20장.
-           화면 **가장자리**도 반드시 덮을 것 (왜곡이 가장 큰 곳이자 coast 가 나는 곳).
+           ★ 화면 3x3 구역을 **전부** 채울 것. 특히 **하단**.
+             1차 촬영이 여기서 실패했다: 커버리지 38%, 하단 행이 1/4/0 코너로 사실상 비어
+             있었는데 **도로가 있는 곳이 바로 화면 하단**이다. 그 결과 왜곡계수 D 가 차선이
+             놓인 영역에서 외삽되어, 체커보드 자체는 0.2% 오차로 완벽했는데 **차선폭이 17%
+             어긋났다**. 웹 오버레이의 3x3 격자가 빨강(빈 구역)이면 그 구역을 채울 것 —
+             보드를 낮게 들어 화면 아래쪽에 담은 장이 반드시 필요하다.
     python3 scripts/capture_camera_calib.py --out ~/calib/intr --count 20
 
   2) H   : 보드를 노면에 **평평하게 눕히고**, 카메라 앞 **18~22cm**, 좌우 중앙에서 1장.
@@ -63,6 +68,7 @@ from sensor_msgs.msg import CompressedImage
 
 PATTERN = (8, 5)        # 내부 코너 (9x6 사각형 보드). offline/calibrate.py --pattern 과 일치
 GAP_GOOD, GAP_WARN = 14.0, 10.0     # min gap (px) 품질 임계
+CELL_GOOD = 40          # 3x3 구역당 목표 코너 수 (= 보드 1장분). 이하면 그 구역의 D 가 부실
 FLAGS = (cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE |
          cv2.CALIB_CB_FAST_CHECK)
 
@@ -81,6 +87,7 @@ class Capture(Node):
         self.a = a
         self.n = 0
         self.gaps = []
+        self.cells = np.zeros((3, 3), int)   # 3x3 코너 커버리지 (아래 GRID 설명)
         self.last_auto = 0.0
         self.shot = threading.Event()
         self.quit = threading.Event()
@@ -109,6 +116,13 @@ class Capture(Node):
             self.shot.set()
 
     # ---------------------------------------------------------------- preview
+    def _add_coverage(self, corners, shape):
+        h, w = shape[:2]
+        for x, y in corners.reshape(-1, 2):
+            r = min(2, int(y * 3 / h))
+            c = min(2, int(x * 3 / w))
+            self.cells[r, c] += 1
+
     def _overlay(self, img, corners, gap):
         vis = cv2.resize(img, None, fx=self.a.preview_scale, fy=self.a.preview_scale,
                          interpolation=cv2.INTER_NEAREST)
@@ -116,6 +130,24 @@ class Capture(Node):
         if corners is not None:
             cv2.drawChessboardCorners(vis, PATTERN, corners * s, True)
         h, w = vis.shape[:2]
+
+        # 3x3 coverage grid. THIS IS THE ONE THAT BIT US: the first shoot covered only
+        # 38% of the frame and left the BOTTOM ROW empty (1/4/0 corners) -- but the road
+        # lives in the bottom of the frame, so the distortion coefficients were being
+        # EXTRAPOLATED exactly where the lanes are, and lane width came out ~17% wrong
+        # while the board itself measured perfect. Fill every cell, especially the bottom.
+        bar = 34
+        for r in range(3):
+            for cI in range(3):
+                x0, y0 = int(cI * w / 3), int(bar + r * (h - bar) / 3)
+                x1, y1 = int((cI + 1) * w / 3), int(bar + (r + 1) * (h - bar) / 3)
+                n = self.cells[r, cI]
+                col = (0, 200, 0) if n >= CELL_GOOD else \
+                      ((0, 200, 255) if n > 0 else (0, 0, 255))
+                cv2.rectangle(vis, (x0 + 1, y0 + 1), (x1 - 1, y1 - 1), col, 1)
+                cv2.putText(vis, str(int(n)), (x0 + 5, y1 - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, col, 1)
+
         # ASCII only: cv2.putText (Hershey) cannot render Hangul -- it would come out as '?'.
         if corners is None:
             head, col = 'NO CORNERS - board bigger / flatter', (0, 0, 255)
@@ -125,12 +157,14 @@ class Capture(Node):
             head, col = f'TIGHT   min gap {gap:.0f}px  (>={GAP_GOOD:.0f} preferred)', (0, 200, 255)
         else:
             head, col = f'TOO SMALL   min gap {gap:.0f}px  - raise resolution', (0, 0, 255)
-        bar = 34
+        empty = int((self.cells == 0).sum())
         cv2.rectangle(vis, (0, 0), (w, bar), (0, 0, 0), -1)
         cv2.putText(vis, head, (5, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1)
-        cv2.putText(vis, f'{img.shape[1]}x{img.shape[0]}   saved {self.n}/{self.a.count}'
-                         f'   [Enter]=save  [q]=quit',
-                    (5, 29), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (200, 200, 200), 1)
+        cov = (f'{empty} cells EMPTY - fill them (esp. BOTTOM = the road)' if empty
+               else 'coverage OK')
+        cv2.putText(vis, f'{img.shape[1]}x{img.shape[0]}  saved {self.n}/{self.a.count}  {cov}',
+                    (5, 29), cv2.FONT_HERSHEY_SIMPLEX, 0.38,
+                    (0, 0, 255) if empty else (0, 220, 0), 1)
         return vis
 
     def _publish(self, vis, stamp):
@@ -174,9 +208,12 @@ class Capture(Node):
         cv2.imwrite(path, img)                       # PNG = 무손실 (재압축 없음)
         self.n += 1
         self.gaps.append(gap)
+        self._add_coverage(corners, img.shape)
         flag = 'OK' if gap >= GAP_GOOD else ('TIGHT' if gap >= GAP_WARN else 'TOO SMALL')
-        self.get_logger().info(f'[{self.n}/{self.a.count}] {path}  '
-                               f'{img.shape[1]}x{img.shape[0]}  min gap {gap:.1f}px  {flag}')
+        empty = int((self.cells == 0).sum())
+        self.get_logger().info(
+            f'[{self.n}/{self.a.count}] {path}  {img.shape[1]}x{img.shape[0]}  '
+            f'min gap {gap:.1f}px  {flag}' + (f'  |  빈 구역 {empty}개' if empty else ''))
         if self.n >= self.a.count:
             raise SystemExit(0)
 
@@ -185,16 +222,30 @@ class Capture(Node):
             print('\n저장된 장이 없다.')
             return
         g = np.array(self.gaps)
-        print(f'\n{"="*64}\n저장 {self.n}장  |  min gap: 최소 {g.min():.1f}px  '
+        print(f'\n{"="*68}\n저장 {self.n}장  |  min gap: 최소 {g.min():.1f}px  '
               f'중앙 {np.median(g):.1f}px  최대 {g.max():.1f}px')
         if g.min() >= GAP_GOOD:
-            print('→ 이 해상도로 충분하다. 그대로 진행.')
+            print('  해상도: 충분하다.')
         elif g.min() >= GAP_WARN:
-            print('→ 아슬하다. 쓸 수는 있으나 해상도를 올리면 K·D·H 정밀도가 올라간다.')
+            print('  해상도: 아슬하다. 올리면 K·D·H 정밀도가 올라간다.')
         else:
-            print('→ 너무 작다. 해상도를 640x480 으로 올려 다시 찍는 것을 권한다\n'
-                  '   (rescale 이 정확히 되돌리므로 손해가 없다).')
-        print(f'{"="*64}')
+            print('  해상도: 너무 작다. 640x480 으로 올려 다시 찍을 것\n'
+                  '          (rescale 이 정확히 되돌리므로 손해가 없다).')
+
+        print(f'\n  코너 커버리지 (3x3 구역, 목표 각 {CELL_GOOD}+):')
+        for r in range(3):
+            print('    ' + ' '.join(f'{int(n):5d}' for n in self.cells[r]))
+        empty = int((self.cells == 0).sum())
+        weak = int(((self.cells > 0) & (self.cells < CELL_GOOD)).sum())
+        if empty or weak:
+            print(f'\n  ⚠ 빈 구역 {empty}개, 부족 {weak}개 — 그 구역의 왜곡계수 D 가 외삽된다.')
+            if self.cells[2].sum() < CELL_GOOD:
+                print('  ⚠ 특히 하단이 비었다. 도로가 있는 곳이 바로 화면 하단이라,\n'
+                      '     차선의 BEV 위치가 틀어진다 (1차 촬영에서 차선폭이 17% 어긋났다).\n'
+                      '     보드를 낮게 들어 화면 아래쪽에 담은 장을 반드시 추가할 것.')
+        else:
+            print('\n  커버리지 OK — 전 구역이 채워졌다.')
+        print(f'{"="*68}')
 
 
 def main():

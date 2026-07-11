@@ -84,6 +84,29 @@ class Cfg:
     conf_low: float = 0.25
     lost_stop_frames: int = 8
 
+    # ==================================================================
+    # METRIC (BEV) parameters — cm, used ONLY when a CameraModel is given.
+    # ------------------------------------------------------------------
+    # In a calibrated BEV a pixel IS a physical length, so every geometric
+    # threshold above becomes a real distance instead of a screen fraction that
+    # silently changes meaning with resolution, camera angle, or track. These cm
+    # values are resolved to px ONCE by `cfg_to_px()`; the stages below it keep
+    # taking plain pixels and are unchanged.
+    lane_width_cm: float = 35.0      # TRACK: centre-to-centre of the two lane tapes.
+                                     # (2025: inner 32 / outer 38, tape 3 -> centres 35.
+                                     #  The fits follow tape CENTRES, so it is neither 32 nor 38.)
+    sw_margin_cm: float = 5.0        # window half-width: lane-position slack + curve step
+    sw_peak_sep_cm: float = 15.0     # two base peaks closer than this = one lane (< lane width)
+    merge_dx_cm: float = 5.0         # two fits within this everywhere = the same tape
+    pair_gap_min_cm: float = 8.0     # below this the pair has collapsed = a crossing, reject
+    jump_max_cm: float = 15.0        # tracker: max lane jump between frames
+    pair_width_tol: float = 0.25     # PHYSICAL pairing gate: |gap - lane_width| <= this*width.
+                                     # Impossible in the front view (gap varies with y); it is
+                                     # what stops a white/yellow or cross-corridor mismatch.
+    heading_cm: float = 5.0          # |top-bottom x| >= this -> turn by heading.
+                                     # In the BEV this is a REAL sideways drift; in the front
+                                     # view perspective convergence faked it (limitation §6a).
+
 
 _FIELDS = {f.name for f in fields(Cfg)}
 
@@ -98,6 +121,37 @@ def cfg_from_profile(section=None):
             continue
         ov[k] = tuple(v) if (k == 'colors' and isinstance(v, list)) else v
     return replace(Cfg(), **ov) if ov else Cfg()
+
+
+def cfg_to_px(cfg, cam):
+    """Resolve the metric (cm) params into BEV pixels — ONCE, here.
+
+    This is the whole trick that keeps the BEV port small: the detector, the sliding
+    window, the pairing and the tracker keep speaking plain pixels and are untouched;
+    only their THRESHOLDS change meaning, and that mapping lives in one place.
+
+    cam=None -> front-view: return cfg unchanged (legacy px thresholds).
+    """
+    if cam is None:
+        return cfg
+    s = cam.px_per_cm
+    bev_w = cam.bev_size[0]
+    lane_px = cfg.lane_width_cm * s
+    return replace(
+        cfg,
+        sw_margin=max(4, int(round(cfg.sw_margin_cm * s))),
+        sw_peak_sep=max(4, int(round(cfg.sw_peak_sep_cm * s))),
+        merge_dx=cfg.merge_dx_cm * s,
+        pair_gap_min=cfg.pair_gap_min_cm * s,
+        jump_max=cfg.jump_max_cm * s,
+        # Tracker reads `lane_width_default * W` as its fallback width, so express the
+        # REAL lane width as that fraction. The old 0.5 was a guess with no physical
+        # meaning — it is what made every coast produce |center_error| ~= 0.5 (§6c).
+        lane_width_default=lane_px / bev_w,
+        # In the BEV, heading is a true lateral drift over the lane's span (no perspective
+        # convergence to fake it), so express the threshold as a real distance.
+        heading_frac=(cfg.heading_cm * s) / bev_w,
+    )
 
 
 LABEL_COLORS = {  # BGR
@@ -301,7 +355,15 @@ def _ebottom(coeffs, yb):
     return a * yb * yb + b * yb + c
 
 
-def _pair_gate(a, b, h, c):
+def _pair_gate(a, b, h, c, lane_w_px=0.0):
+    """Can these two fits be the left/right boundary of ONE corridor?
+
+    `lane_w_px` > 0 (BEV only) adds the PHYSICAL gate: the gap must actually equal a
+    lane width. In the front view the gap shrinks with y, so no such test exists and
+    `pair_gap_min` degenerates into "> 0" — which is why a white line could pair with a
+    yellow one across the wrong corridor (§6b). In a metric BEV the gap is constant, so
+    "is this really a lane width apart?" is a question we can finally ask.
+    """
     ylo = max(int(a['ys'].min()), int(b['ys'].min()))
     yhi = min(int(a['ys'].max()), int(b['ys'].max()))
     if yhi - ylo < c.pair_overlap_min * h:
@@ -310,10 +372,13 @@ def _pair_gate(a, b, h, c):
     gaps = _ebottom(b['coeffs'], yy) - _ebottom(a['coeffs'], yy)
     if float(gaps.min()) < c.pair_gap_min:
         return None
+    if lane_w_px > 0:
+        if abs(float(gaps.mean()) - lane_w_px) > c.pair_width_tol * lane_w_px:
+            return None                      # not a lane width apart -> not one corridor
     return ylo, yhi
 
 
-def lane_centers(lanes, w, h, c):
+def lane_centers(lanes, w, h, c, lane_w_px=0.0):
     cx = w / 2.0
     ls = sorted([x for x in lanes if x['coeffs'] is not None],
                 key=lambda x: x['x_bottom'])
@@ -321,7 +386,7 @@ def lane_centers(lanes, w, h, c):
     for a, b in zip(ls, ls[1:]):
         if _side(a, w) == _side(b, w):
             continue
-        ov = _pair_gate(a, b, h, c)
+        ov = _pair_gate(a, b, h, c, lane_w_px)
         if ov is None:
             continue
         ylo, yhi = ov
@@ -333,18 +398,39 @@ def lane_centers(lanes, w, h, c):
     return out
 
 
-def ego_center(centers, lanes, w, width):
+def ego_center(centers, lanes, w, width, mL=None, mR=None):
+    """Ego corridor centreline: a real left/right pair, else COAST off one boundary.
+
+    `mL`/`mR` are the Tracker's picks for this frame. Prefer them for the coast side:
+    the Tracker carries the left/right identity ACROSS frames (it matches against the
+    lane it tracked last frame), whereas deciding the side afresh from `x_bottom < cx`
+    flips as soon as a curving lane crosses the image centre — and a flip inverts the
+    shift, so the centreline jumps to the WRONG SIDE of the car. That is what produced
+    the sign reversals: 96 of them, 80% while coasting, and the steering command pointed
+    INTO the lane instead of away from it (§6c/§6e, §7.4 f250).
+    """
     for cc in centers:
         if cc['ego']:
             return cc
     cx = w / 2.0
-    cand = [x for x in lanes if x['coeffs'] is not None]
-    if not cand or width <= 0:
+    if width <= 0:
         return None
-    near = min(cand, key=lambda x: abs(x['x_bottom'] - cx))
-    if abs(near['x_bottom'] - cx) > width:
-        return None
-    dx = width / 2.0 if near['x_bottom'] < cx else -width / 2.0
+
+    # Side from the Tracker (persistent) — not from this frame's geometry.
+    near, dx = None, 0.0
+    if mL is not None and mL.get('coeffs') is not None:
+        near, dx = mL, +width / 2.0          # left boundary -> corridor lies to its RIGHT
+    elif mR is not None and mR.get('coeffs') is not None:
+        near, dx = mR, -width / 2.0          # right boundary -> corridor lies to its LEFT
+    else:
+        cand = [x for x in lanes if x['coeffs'] is not None]
+        if not cand:
+            return None
+        near = min(cand, key=lambda x: abs(x['x_bottom'] - cx))
+        if abs(near['x_bottom'] - cx) > width:
+            return None                       # too far to be an ego boundary
+        dx = width / 2.0 if near['x_bottom'] < cx else -width / 2.0
+
     coeffs = _shift(near['coeffs'], dx)
     xb = near['x_bottom'] + dx
     # clamp to the source lane's observed span so heading/curvature/drawing never
@@ -456,39 +542,65 @@ def _heading_deg(coeffs, y_lo, y_hi):
 # Public pipeline (stateful across frames)
 # ==========================================================================
 class LanePipeline:
-    def __init__(self, cfg):
+    """Lane pipeline. `cam` (dracer_core.calib.CameraModel) switches on the metric BEV.
+
+    cam=None  -> front-view (legacy). Lane fits are in image coords; every geometric
+                 threshold is a screen fraction; coast shifts by a constant pixel offset
+                 that is only correct in a BEV. Known limitations: PERCEPTION.md §6.
+    cam given -> masks are warped to a calibrated top-down view, so a pixel IS a length.
+                 Lane width, pairing, coast and heading all become physical. `cfg_to_px`
+                 resolves the cm thresholds once; every stage below stays pixel-based.
+
+    The scalar contract (`center_error` normalised to [-1,1]) is UNCHANGED in both modes,
+    so control needs no retune to A/B this. Switching it to cm is a separate step (P5).
+    """
+
+    def __init__(self, cfg, cam=None):
         self.cfg = cfg
-        self.stab = _Stabilizer(cfg)
+        self.cam = cam
+        self.c = cfg_to_px(cfg, cam)          # cm -> BEV px, once
+        self.stab = _Stabilizer(self.c)
         self.trk = None
         self._size = None
 
     def process(self, bgr, debug=False):
         """Run one frame. Returns (overlay, state); with debug=True also a third
         dict of intermediates for render_panels (masks, lanes, windows, ec, ...)."""
-        c = self.cfg
+        c = self.c
         h, w = bgr.shape[:2]
-        if self._size != (h, w):
-            self._size = (h, w)
-            self.trk = Tracker(c, h, w)
 
         white, yellow = detect(bgr, c)
         roi, y0, trap = _roi_mask(h, w, c)
         mw = cv2.bitwise_and(white, roi)
         my = cv2.bitwise_and(yellow, roi)
-        # --- BEV seam: a calibrated BEV would warp (mw, my) here and unwarp the
-        #     fitted coeffs before drawing. Front-view interim keeps image coords.
+
+        # --- BEV seam --------------------------------------------------------
+        # Warp the COLOR MASKS (not the frame): detection is a per-pixel colour test,
+        # so it is cheaper and sharper before resampling. Everything after this point
+        # is coordinate-agnostic and needs no change — it just gets metric pixels.
+        if self.cam is not None:
+            mw = self.cam.to_bev(mw)
+            my = self.cam.to_bev(my)
+            w, h = self.cam.bev_size
+            lane_w_px = self.cam.lane_width_px(c.lane_width_cm)
+        else:
+            lane_w_px = 0.0                   # no physical gate in the front view
+        if self._size != (h, w):
+            self._size = (h, w)
+            self.trk = Tracker(c, h, w)
+
         windows = []
         lanes = (sliding_window_lanes(mw, 'W', c, windows) +
                  sliding_window_lanes(my, 'Y', c, windows))
         mL, mR = self.trk.update(lanes)
 
-        centers = lane_centers(lanes, w, h, c)
+        centers = lane_centers(lanes, w, h, c, lane_w_px)
         width = self.trk.width if self.trk.width else c.lane_width_default * w
-        ec = ego_center(centers, lanes, w, width)
+        ec = ego_center(centers, lanes, w, width, mL, mR)
 
         if ec is not None:
             center_error = float(ec['offset'] / (w / 2))
-            y_lo, y_hi = ec.get('y_lo', y0), ec.get('y_hi', h - 1)
+            y_lo, y_hi = ec.get('y_lo', 0), ec.get('y_hi', h - 1)
             heading = _heading_deg(ec['coeffs'], y_lo, y_hi)
             curvature = float(ec['coeffs'][0] * 1000.0)
             confidence = 0.5 if ec.get('coast') else 0.9
@@ -508,12 +620,13 @@ class LanePipeline:
             'right_conf': right_conf, 'curvature': curvature,
             'state': fstate, 'used_fallback': used_fb,
         }
-        overlay = _render_single(bgr, lanes, ec, w, ema, heading, fstate)
+        overlay = _render_single(bgr, lanes, ec, w, ema, heading, fstate, self.cam)
         if debug:
             dbg = {'mw': mw, 'my': my, 'lanes': lanes, 'windows': windows, 'ec': ec,
                    'trap': trap, 'y0': y0, 'ema': ema, 'fstate': fstate,
                    'center_error': center_error, 'heading': heading,
-                   'confidence': confidence, 'used_fb': used_fb}
+                   'confidence': confidence, 'used_fb': used_fb, 'cam': self.cam,
+                   'bev_size': (w, h)}
             return overlay, state, dbg
         return overlay, state
 
@@ -534,17 +647,37 @@ def _lane_span(ins):
     return int(ins['ys'].min()), int(ins['ys'].max())
 
 
-def _render_single(bgr, lanes, ec, w, ema, heading, fstate):
+def _draw_fit(img, coeffs, y0, y1, color, thick, cam):
+    """Draw a lane fit. In BEV mode the fit lives in ground coords -> unwarp it back
+    onto the camera frame, so the overlay a human looks at is always the real view."""
+    if cam is None:
+        _draw_curve(img, coeffs, color, thick, y0, y1)
+        return
+    pts = cam.bev_coeffs_to_image(coeffs, y0, y1)
+    h, w = img.shape[:2]
+    p = np.array([[int(x), int(y)] for x, y in pts
+                  if 0 <= x < w and 0 <= y < h], np.int32)
+    if len(p) > 1:
+        cv2.polylines(img, [p], False, color, thick)
+
+
+def _render_single(bgr, lanes, ec, w, ema, heading, fstate, cam=None):
     img = bgr.copy()
     for ins in lanes:
         if ins['coeffs'] is None:
             continue
         col = LABEL_COLORS.get(classify(ins, w), (0, 255, 0))
-        _draw_curve(img, ins['coeffs'], col, 2, *_lane_span(ins))
+        _draw_fit(img, ins['coeffs'], *_lane_span(ins), col, 2, cam)
     if ec is not None:
-        _draw_curve(img, ec['coeffs'], EGO_CENTER_COLOR, 2,
-                    ec.get('y_lo', 0), ec.get('y_hi', img.shape[0] - 1))
-    off = f"{ec['offset']:+.0f}px{'(coast)' if ec.get('coast') else ''}" if ec else '--'
+        _draw_fit(img, ec['coeffs'], ec.get('y_lo', 0),
+                  ec.get('y_hi', (cam.bev_size[1] - 1) if cam else img.shape[0] - 1),
+                  EGO_CENTER_COLOR, 2, cam)
+    if ec is None:
+        off = '--'
+    elif cam is not None:
+        off = f"{ec['offset'] / cam.px_per_cm:+.1f}cm{'(coast)' if ec.get('coast') else ''}"
+    else:
+        off = f"{ec['offset']:+.0f}px{'(coast)' if ec.get('coast') else ''}"
     txt = f"off {off} ema {'n/a' if ema is None else f'{ema:+.2f}'} {fstate}"
     cv2.putText(img, txt, (4, img.shape[0] - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.4,
                 EGO_CENTER_COLOR, 1)
@@ -563,53 +696,78 @@ def _inst_color(idx):
 
 
 def render_panels(bgr, dbg, cfg):
-    """Online debug multi-panel (front-view, 4 panels):
-      [ input+ROI | white/yellow mask | sliding windows+lanes | label+ego overlay ].
+    """Online debug multi-panel (4 panels):
+      [ input+ROI | mask | sliding windows+lanes | label+ego overlay ].
     Built only from `LanePipeline.process(debug=True)` intermediates (no
-    re-implementation). perception_node publishes this on /lane/debug/compressed;
-    recorder saves it. BEV (6-panel) is deferred to the calibrated-BEV stage.
+    re-implementation). perception_node publishes this on /lane/debug/compressed.
+
+    In BEV mode panels 2-3 show the METRIC top-down view (that is where the lanes are
+    actually found), letter-boxed to the frame size so the strip stays uniform, while
+    panels 1 and 4 stay in the camera view a human can read.
     """
     h, w = bgr.shape[:2]
     mw, my, lanes = dbg['mw'], dbg['my'], dbg['lanes']
     windows, ec, trap = dbg['windows'], dbg['ec'], dbg['trap']
+    cam = dbg.get('cam')
+    bw, bh = dbg.get('bev_size', (w, h))     # lane coords live in THIS frame
 
-    # P1: input + ROI trapezoid
+    def _fit_panel(img):
+        """BEV canvas -> frame-sized panel (uniform strip, aspect preserved)."""
+        if (img.shape[1], img.shape[0]) == (w, h):
+            return img
+        s = min(w / img.shape[1], h / img.shape[0])
+        r = cv2.resize(img, (max(1, int(img.shape[1] * s)), max(1, int(img.shape[0] * s))),
+                       interpolation=cv2.INTER_NEAREST)
+        out = np.zeros((h, w, 3), np.uint8)
+        y0, x0 = (h - r.shape[0]) // 2, (w - r.shape[1]) // 2
+        out[y0:y0 + r.shape[0], x0:x0 + r.shape[1]] = r
+        return out
+
+    # P1: input + ROI trapezoid (camera view)
     p1 = bgr.copy()
     cv2.polylines(p1, [trap.astype(np.int32)], True, (0, 200, 255), 1)
     _panel(p1, f'1 input+ROI  {cfg.name}')
 
-    # P2: white/yellow mask
-    p2 = np.zeros((h, w, 3), np.uint8)
+    # P2: mask — in BEV mode this is the warped, metric mask
+    p2 = np.zeros((bh, bw, 3), np.uint8)
     p2[mw > 0] = (200, 200, 200)
     p2[my > 0] = (0, 220, 255)
-    _panel(p2, '2 mask (W/Y)')
+    if cam is not None:                       # vehicle axis: what center_error is measured from
+        cv2.line(p2, (int(cam.axis_u), 0), (int(cam.axis_u), bh - 1), (0, 0, 120), 1)
+    p2 = _fit_panel(p2)
+    _panel(p2, '2 mask' + ('  BEV metric' if cam is not None else '  (W/Y)'))
 
-    # P3: sliding windows + lane instance points
-    p3 = np.zeros((h, w, 3), np.uint8)
+    # P3: sliding windows + lane points (same coords as the fits)
+    p3 = np.zeros((bh, bw, 3), np.uint8)
     for (xlo, ylo, xhi, yhi) in windows:
         cv2.rectangle(p3, (xlo, ylo), (xhi, yhi), (55, 55, 55), 1)
     for idx, ins in enumerate(lanes):
         col = _inst_color(idx)
         for x, y in zip(ins['xs'][::3], ins['ys'][::3]):
             cv2.circle(p3, (int(x), int(y)), 1, col, -1)
+    p3 = _fit_panel(p3)
     _panel(p3, f'3 sliding ({len(lanes)} lane)')
 
-    # P4: label overlay + ego center on original
+    # P4: labels + ego centreline, unwarped back onto the camera view
     p4 = bgr.copy()
     ty = 26
     for ins in lanes:
         if ins['coeffs'] is None:
             continue
-        lab = classify(ins, w)
+        lab = classify(ins, bw)
         col = LABEL_COLORS.get(lab, (0, 255, 0))
-        _draw_curve(p4, ins['coeffs'], col, 2, *_lane_span(ins))
+        _draw_fit(p4, ins['coeffs'], *_lane_span(ins), col, 2, cam)
         cv2.putText(p4, lab, (4, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.32, col, 1)
         ty += 14
     if ec is not None:
-        _draw_curve(p4, ec['coeffs'], EGO_CENTER_COLOR, 2,
-                    ec.get('y_lo', 0), ec.get('y_hi', h - 1))
-    off = (f"off={ec['offset']:+.0f}px{'(coast)' if ec.get('coast') else ''}"
-           if ec is not None else 'off=--')
+        _draw_fit(p4, ec['coeffs'], ec.get('y_lo', 0), ec.get('y_hi', bh - 1),
+                  EGO_CENTER_COLOR, 2, cam)
+    if ec is None:
+        off = 'off=--'
+    elif cam is not None:
+        off = f"off={ec['offset'] / cam.px_per_cm:+.1f}cm{'(coast)' if ec.get('coast') else ''}"
+    else:
+        off = f"off={ec['offset']:+.0f}px{'(coast)' if ec.get('coast') else ''}"
     _panel(p4, f"4 labels+ego  {off}  {dbg['fstate']}")
 
     return np.hstack([p1, p2, p3, p4])

@@ -32,6 +32,14 @@ def default_profile_path():
         '/home/topst/SC2026/D-Racer-Kit/src/config/profiles/track2025.yaml')
 
 
+def default_camera_path():
+    """Camera calibration -> metric BEV. TRACK-INDEPENDENT (reuse at any venue);
+    re-run `offline/calibrate.py --ground` if the camera mount was moved."""
+    return find_config(
+        'src/config/camera.yaml',
+        '/home/topst/SC2026/D-Racer-Kit/src/config/camera.yaml')
+
+
 def default_record_dir():
     """Recorder output root. Sessions land in <root>/{panel,raw,csv}/ (recorder_node).
 
