@@ -31,6 +31,7 @@ ros2 launch dracer_bringup drive.launch.py \
 | `outlier_relatch` | `6` | `5` | **[P]** `6` | 예 (측정상 개선) |
 | `steer_max` | `0.8` | `0.7` | **[P]** `0.8` | 아니오 (실측 max \|u\|=0.528) |
 | `track_width_tol` | 없음(=무제한) | `0.25` | **[P]** `0.0` | 아니오 (1,505프레임 중 0회 발동) |
+| `coast_flip_support` | 없음 | `0.15` | **[P]** `0.0` | 예 (1,505프레임 중 **1회** 발동) |
 | `slew_rate` → `slew_rate_per_sec` | `0.15`/step | `4.5`/sec | **[P]** `4.5` | 아니오 (30Hz에서 동일) |
 | `dt_max` | 없음 | `0.1` | **[P]** `10.0` | 아니오 (30Hz에서 dt=0.033) |
 | `command_hz` | `10.0` | `30.0` | **[L]** `10.0` | 예 (지연 감소) |
@@ -44,10 +45,11 @@ ros2 launch dracer_bringup drive.launch.py \
 ### 트랙에서 한 항목씩 끄기 (엔게이지 해제 후)
 
 ```bash
-ros2 param set /control_node    throttle_outlier 1.0    # 스로틀 컷 끄기 ← 먼저 이것부터
-ros2 param set /control_node    steer_max        0.8
-ros2 param set /perception_node outlier_relatch  6
-ros2 param set /perception_node track_width_tol  0.0
+ros2 param set /control_node    throttle_outlier   1.0  # 스로틀 컷 끄기 ← 먼저 이것부터
+ros2 param set /control_node    steer_max          0.8
+ros2 param set /perception_node outlier_relatch    6
+ros2 param set /perception_node track_width_tol    0.0
+ros2 param set /perception_node coast_flip_support 0.0  # coast 좌/우 마스크 반증 끄기
 ros2 param set /control_node    state_timeout    0.0    # 워치독 끄기 (권장하지 않음)
 ros2 param set /control_node    joystick_timeout 0.0
 ```

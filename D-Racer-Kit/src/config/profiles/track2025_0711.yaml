@@ -28,8 +28,10 @@ perception:
   yellow_v_min: 100
 
   # --- 0712 변경분 무효화 -------------------------------------------------
-  outlier_relatch: 6     # 0712: 5. EMA 재시드까지의 연속 거부 프레임 수.
-  track_width_tol: 0.0   # 0712: 0.25. 0 = Tracker 폭 측정을 무조건 수용 (구 동작).
+  outlier_relatch: 6      # 0712: 5. EMA 재시드까지의 연속 거부 프레임 수.
+  track_width_tol: 0.0    # 0712: 0.25. 0 = Tracker 폭 측정을 무조건 수용 (구 동작).
+  coast_flip_support: 0.0 # 0712: 0.15. 0 = coast 좌/우를 마스크로 반증하지 않음 (구 동작).
+                          # coast 가 이상하면(차선폭만큼 튀면) 여기부터 꺼 보라.
 
 control:
   controller: C2

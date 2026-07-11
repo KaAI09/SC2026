@@ -96,6 +96,31 @@ class Cfg:
                                  # corridor pick and `adopt` already get it right); this is for
                                  # the 4-lane roundabout, where several corridors are visible and
                                  # picking the wrong one is a lane change nobody asked for.
+    # coast side check (falsify the coast's left/right against the mask; `coast_side`)
+    coast_flip_support: float = 0.15   # the MIRROR assumption needs at least this fraction of
+                                       # its rows backed by mask pixels before we believe it
+                                       # over the tracker. <= 0 disables the check entirely
+                                       # (pre-0712 behaviour; see ROLLBACK.md).
+                                       #
+                                       # Measured over the 20 coast->pair transitions in the
+                                       # 0711 runs (the pair that ends a coast reveals that
+                                       # coast's true error):
+                                       #   mirror support > 0 in 0 of the 16 coasts that were
+                                       #     RIGHT (< 15cm error)  -> zero false positives
+                                       #   mirror support > 0 in 2 of the 4 coasts that were
+                                       #     WRONG (18cm and 29cm out)
+                                       # 0.15 sits above the noise and below both real hits
+                                       # (0.18, 0.27). This is a LEFT/RIGHT check, not a
+                                       # general coast validator -- one 15cm error had a
+                                       # well-supported phantom and is a width bug, not a
+                                       # side bug.
+    coast_flip_empty: float = 0.05     # ...AND our own phantom must be this unsupported. The
+                                       # flip is only allowed in the unambiguous case: we are
+                                       # pointing at bare tarmac and there is tape opposite.
+                                       # Without this, `s_alt > s_now` flips on 0.35-vs-0.30,
+                                       # a coin toss dressed as evidence -- and a false flip
+                                       # is not a bad frame, it is a bad TRACKER, because
+                                       # `reseat_coast` persists it until a pair rescues us.
     # E: tracker (ego L/R persistence + width coast)
     lane_width_default: float = 0.5
     jump_max: float = 120.0
@@ -506,7 +531,94 @@ def lane_centers(lanes, w, h, c, lane_w_px=0.0, axis=None):
     return out
 
 
-def ego_center(centers, lanes, w, width, mL=None, mR=None, axis=None, c=None):
+def _support(cs, coeffs, ys, margin):
+    """Fraction of the rows of `ys` where the BEV mask actually HAS pixels within `margin`
+    of this polynomial. `cs` is the mask's row-wise cumulative sum.
+
+    Asks the only question that can falsify a coast: is there really a lane where we are
+    claiming one is?
+    """
+    h, w = cs.shape
+    vs = np.arange(max(0, int(ys.min())), min(h, int(ys.max()) + 1))
+    if vs.size == 0:
+        return 0.0
+    xs = _ebottom(coeffs, vs.astype(float))
+    lo = np.clip(np.floor(xs - margin).astype(int), 0, w - 1)
+    hi = np.clip(np.ceil(xs + margin).astype(int), 0, w - 1)
+    # rows whose window lies entirely outside the BEV carry no evidence either way
+    inside = (xs + margin >= 0) & (xs - margin <= w - 1)
+    got = (cs[vs, hi] - cs[vs, lo]) > 0
+    return float(np.count_nonzero(got & inside) / vs.size)
+
+
+def coast_side(near, dx, mask, c, margin, cx):
+    """Is the boundary we are coasting off really on the side we think it is?
+
+    A coast takes ONE boundary and asserts the corridor lies to its left or its right. The
+    assertion is the tracker's identity, and when that identity is wrong the corridor centre
+    lands a full lane width from the truth -- with a perfect lane fit, a 0.98 span and a
+    1.3cm residual. Nothing about the GEOMETRY of a wrong coast looks wrong (PERCEPTION.md
+    §8-); the fit is immaculate, it is simply pointed the wrong way.
+
+    So ask the one question geometry cannot: PUT THE PHANTOM BOUNDARY WHERE WE CLAIM IT IS,
+    AND LOOK. If the far boundary we are synthesising has no mask under it, but the mirror
+    assumption DOES, we chose the wrong side.
+
+    Measured over the 20 coast->pair transitions in the 0711 runs (where the pair that ends
+    the coast gives us the coast's true error):
+
+        opposite-side support > 0  in  0 of the 16 coasts that were right (< 15cm error)
+        opposite-side support > 0  in  2 of the 4  coasts that were wrong (18cm, 29cm)
+
+    Zero false positives, and it catches half the real failures. The other half are not
+    side errors at all (one had a well-supported phantom and was still 15cm out -- a width
+    error, a different bug), so this is not a general coast-validator; it is specifically a
+    LEFT/RIGHT check, and that is the failure that inverts the steering command.
+
+    Returns `dx`, flipped if the evidence says so.
+    """
+    if mask is None or near.get('coeffs') is None or c.coast_flip_support <= 0:
+        return dx, False
+    # Row-wise cumulative sum -> "are there pixels within +-margin of this curve?" becomes
+    # one subtraction per row, for any curve. Built HERE, so it costs nothing on the ~50% of
+    # frames that see a real pair and never coast at all.
+    cs = np.cumsum(mask > 0, axis=1, dtype=np.int32)
+    ys = near['ys']
+    s_now = _support(cs, _shift(near['coeffs'], 2.0 * dx), ys, margin)
+    s_alt = _support(cs, _shift(near['coeffs'], -2.0 * dx), ys, margin)
+    # The discriminator is `s_alt`. `s_now == 0` is the NORMAL state of a coast -- measured
+    # over the 0711 runs, the chosen phantom has support p50 = 0.000, because the whole reason
+    # we are coasting is that the far boundary is not visible (often it is not even inside the
+    # BEV: 145617's phantom sat at +43cm against a 29cm half-width). So `s_now <= empty` is a
+    # sanity condition, not the signal. The SIGNAL is that the MIRROR has tape under it, and
+    # that is rare: mirror support mean = 0.005 across every coast frame in those runs.
+    #
+    # Both, though, because `s_alt > s_now` alone would flip on 0.35-vs-0.30 -- a coin toss
+    # dressed as evidence -- and a false flip is not a bad frame, it is a bad TRACKER
+    # (`reseat_coast` persists it until a pair rescues us).
+    if not (s_alt >= c.coast_flip_support and s_now <= c.coast_flip_empty):
+        return dx, False
+
+    # THE GUARD THAT MAKES THIS SAFE IN A MULTI-LANE SCENE.
+    #
+    # The mask can tell us "there is a lane over there". It cannot tell us "that lane is
+    # MINE". On a two-lane road those coincide. On the four-lane roundabout they do not:
+    # sitting in lane 1, coasting off the lane1/lane2 boundary, our own far boundary can be
+    # outside the FOV (s_now = 0) while lane 2's far boundary is perfectly visible
+    # (s_alt high) -- and the test above would happily flip us one lane over. An unrequested
+    # lane change, in the one part of the mission where that is worst.
+    #
+    # But the car is IN the corridor. So the flip must bring the corridor centre TOWARD the
+    # vehicle axis, never away from it. Flipping into the neighbour moves it a full lane
+    # width further out; flipping back onto our own lane moves it in. That is a free,
+    # unambiguous discriminator, and it costs one subtraction.
+    if abs(near['x_bottom'] - dx - cx) >= abs(near['x_bottom'] + dx - cx):
+        return dx, False
+    return -dx, True
+
+
+def ego_center(centers, lanes, w, width, mL=None, mR=None, axis=None, c=None,
+               mask=None, margin=0.0):
     """Ego corridor centreline: a real left/right pair, else COAST off one boundary.
 
     `mL`/`mR` are the Tracker's picks for this frame. Prefer them EVERYWHERE — for choosing
@@ -553,12 +665,19 @@ def ego_center(centers, lanes, w, width, mL=None, mR=None, axis=None, c=None):
             return None                       # too far to be an ego boundary
         dx = width / 2.0 if near['x_bottom'] < cx else -width / 2.0
 
+    # Everything above chose the side from an IDENTITY -- the tracker's, or (last resort) the
+    # vehicle axis. Now falsify it against the mask: is there really a lane where we are about
+    # to claim one is? See `coast_side`.
+    flipped = False
+    if c is not None:
+        dx, flipped = coast_side(near, dx, mask, c, margin, cx)
+
     coeffs = _shift(near['coeffs'], dx)
     xb = near['x_bottom'] + dx
     # clamp to the source lane's observed span so heading/curvature/drawing never
     # extrapolate the parabola beyond where the lane was actually detected.
     return {'coeffs': coeffs, 'x_bottom': xb, 'offset': xb - cx, 'ego': True,
-            'a': near, 'b': None, 'coast': True,
+            'a': near, 'b': None, 'coast': True, 'flipped': flipped,
             'y_lo': float(near['ys'].min()), 'y_hi': float(near['ys'].max())}
 
 
@@ -721,6 +840,25 @@ class Tracker:
         wdt = self._measure_width(a, b)
         if wdt is not None and self._width_ok(wdt):
             self.width = wdt if self.width is None else 0.6 * self.width + 0.4 * wdt
+
+    def reseat_coast(self, near, dx, width):
+        """`coast_side` found the mask under the mirror of our phantom: `near` is on the
+        OTHER side from what we believed. Move the belief, not just this frame's answer.
+
+        A per-frame correction that leaves the tracker wrong is not a correction, it is an
+        oscillation: next frame the (still wrong) identity coasts the wrong way again, the
+        mask flips it again, and `center_error` swings a full lane width every frame. That is
+        measured, not hypothetical -- flipping only the output took the 0711 runs from 0
+        oscillations to 3. Same lesson as `adopt`: correct the IDENTITY or do not correct.
+        """
+        if width <= 0:
+            return
+        if dx > 0:                                # near is the LEFT boundary after the flip
+            self.L = near['coeffs']
+            self.R = _shift(self.L, width)
+        else:                                     # near is the RIGHT boundary
+            self.R = near['coeffs']
+            self.L = _shift(self.R, -width)
 
     def update(self, instances):
         cands = [x for x in instances if x['coeffs'] is not None]
@@ -907,18 +1045,25 @@ class LanePipeline:
         # mounted dead centre (lateral_offset_cm = 0); `cam.axis_u` is the real one, and it
         # is what `center_error` must be measured from.
         axis = self.cam.axis_u if self.cam is not None else w / 2.0
+        # The combined mask, for `coast_side` to falsify a coast against. The expensive part
+        # (the cumulative sum) is built inside it, i.e. only on frames that actually coast.
+        mask = cv2.bitwise_or(mw, my) if c.coast_flip_support > 0 else None
         centers = lane_centers(lanes, w, h, c, lane_w_px, axis)
         # `if self.trk.width` was the test, and a NEGATIVE width is truthy -- it sailed straight
         # through into `ego_center`, which then returned None on `width <= 0`. Belt and braces:
         # `_measure_width` can no longer produce one, and this can no longer pass one on.
         width = self.trk.width if (self.trk.width and self.trk.width > 0) else c.lane_width_default * w
-        ec = ego_center(centers, lanes, w, width, mL, mR, axis, c)
+        ec = ego_center(centers, lanes, w, width, mL, mR, axis, c, mask, c.sw_margin)
 
         # If the ego corridor is a REAL pair that is not the one the tracker was following,
         # the tracker was following the wrong thing. Take the proven identity (see adopt()).
         if (ec is not None and ec.get('b') is not None
                 and (ec['a'] is not mL or ec['b'] is not mR)):
             self.trk.adopt(ec['a'], ec['b'])
+        # A coast the mask contradicted. Reseat the tracker so the correction STICKS --
+        # otherwise it un-corrects itself next frame and oscillates (see reseat_coast).
+        elif ec is not None and ec.get('flipped'):
+            self.trk.reseat_coast(ec['a'], ec['x_bottom'] - ec['a']['x_bottom'], width)
 
         if ec is not None:
             center_error = float(ec['offset'] / (w / 2))
