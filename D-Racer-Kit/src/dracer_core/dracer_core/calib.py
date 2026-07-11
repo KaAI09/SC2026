@@ -418,6 +418,64 @@ def ground_pose(img, K, D, pattern, square_mm):
             float(ground[:, 0].mean()), rms)
 
 
+def refine_with_lanes(cam, lane_pairs, lane_width_cm):
+    """Align the BEV plane to the LANES, not to the calibration board.
+
+    WHY THIS IS NEEDED (and is not cheating):
+      A BEV assumes the ground is a plane. The chessboard gives us a plane -- but the
+      board's plane, which is a rigid clipboard lying on a WRINKLED mat, a few mm above
+      it and tilted by whatever the mat does underneath. The lanes live on the mat.
+      Measured on the real track, that gap shows up exactly as you would predict: the
+      board reprojects to 0.04% but the lane gap shrinks with distance
+      (31.5cm at 30cm -> 27.0cm at 74cm, against a real 35cm), i.e. the two planes are
+      tilted relative to each other and the perspective is not fully removed.
+
+      The chessboard is still what fixes the SCALE (a 25mm square is a known ruler).
+      This step only re-seats the plane on the surface we actually measure. The lane
+      width is an independent, physically measured quantity (35cm centre-to-centre), so
+      we are fitting to a known truth, not to ourselves.
+
+    Constraint: on a straight, the two boundaries must be PARALLEL and exactly
+    `lane_width_cm` apart at EVERY forward distance. We keep each frame's observed lane
+    CENTRE (the car may sit off-centre — that is signal, not error) and only correct the
+    width, which forces parallelism as a by-product.
+
+    `lane_pairs`: [(coeffs_left, coeffs_right, v_lo, v_hi), ...] in CURRENT BEV coords,
+    from straight-section frames. Returns a NEW CameraModel (does not mutate `cam`).
+    """
+    def _at(coeffs, v):
+        return coeffs[0] * v * v + coeffs[1] * v + coeffs[2]
+
+    w_px = cam.lane_width_px(lane_width_cm)
+    src, dst = [], []
+    for cl, cr, v_lo, v_hi in lane_pairs:
+        for v in np.linspace(float(v_lo), float(v_hi), 12):
+            xl, xr = _at(cl, v), _at(cr, v)
+            if not (np.isfinite(xl) and np.isfinite(xr)) or xr <= xl:
+                continue
+            xc = (xl + xr) / 2.0                 # keep the observed centre
+            src += [[xl, v], [xr, v]]
+            dst += [[xc - w_px / 2.0, v], [xc + w_px / 2.0, v]]
+    if len(src) < 16:
+        raise RuntimeError(f'need more straight-lane samples, got {len(src)//2}')
+    src = np.asarray(src, np.float32).reshape(-1, 1, 2)
+    dst = np.asarray(dst, np.float32).reshape(-1, 1, 2)
+    H2, inl = cv2.findHomography(src, dst, cv2.RANSAC, 3.0)
+    if H2 is None:
+        raise RuntimeError('lane refinement homography failed')
+    proj = cv2.perspectiveTransform(src, H2)
+    rms = float(np.sqrt(((proj - dst) ** 2).sum(axis=2).mean())) / cam.px_per_cm
+
+    m = CameraModel(
+        image_size=cam.image_size, K=cam.K.copy(), D=cam.D.copy(),
+        H=H2 @ cam.H,                            # BEV-space correction, composed in
+        px_per_cm=cam.px_per_cm, x_half_cm=cam.x_half_cm,
+        y_near_cm=cam.y_near_cm, y_far_cm=cam.y_far_cm,
+        lateral_offset_cm=cam.lateral_offset_cm,
+        rms_px=cam.rms_px, ground_rms_px=cam.ground_rms_px, square_mm=cam.square_mm)
+    return m, rms, int(inl.sum()) if inl is not None else len(src)
+
+
 def ground_extent(Hg, K, D, image_size, margin=0.02):
     """Where on the ground can this camera actually see? -> (x_half, y_near, y_far) cm.
 
