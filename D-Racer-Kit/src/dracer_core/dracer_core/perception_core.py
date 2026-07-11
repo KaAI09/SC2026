@@ -340,9 +340,22 @@ def sliding_window_lanes(mask, color, c, windows_out=None):
                 hits += 1
             else:
                 cur += step
-                miss += 1
-                if miss >= c.sw_max_miss:
-                    break
+                # Only a gap BETWEEN hits is a miss. Empty windows BEFORE the first hit are
+                # the climb up to the lane, not the end of it, and `sw_max_miss` must not
+                # spend itself on them: the base peak has already proven there are pixels in
+                # this column: they are simply not at the very bottom of the BEV.
+                #
+                # They routinely are not. The near BEV rows go blind whenever the lane leaves
+                # the camera's lateral FOV -- on a curve, or with the car merely offset -- and
+                # the BEV floor (26cm) sits below where this lens can see a lane at all (both
+                # boundaries only appear from ~30cm, and the near field is asymmetric:
+                # -19.7..+2.0cm at 26cm). Counting that climb as misses killed EVERY stack
+                # three windows in, and the whole frame came out as 0 lanes with a perfectly
+                # good mask sitting right there in the debug panel.
+                if hits:
+                    miss += 1
+                    if miss >= c.sw_max_miss:
+                        break
             cur = min(max(cur, 0.0), float(W - 1))
         if not xs_all:
             continue
