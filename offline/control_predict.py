@@ -12,6 +12,7 @@ This never actuates — it only computes what each controller WOULD command on t
 human's lane states. See offline/CONTROL_DESIGN.md §5 for the open-loop rationale.
 
     python control_predict.py drive.mp4 --csv drive.csv \
+        --camera ../D-Racer-Kit/src/config/camera.yaml \
         --profile ../D-Racer-Kit/src/config/profiles/track2025.yaml \
         --controllers C1,C2,C3,C4,C5
 
@@ -22,6 +23,7 @@ import os
 
 import numpy as np
 
+from dracer_core.calib import CameraModel
 from dracer_core.perception_core import LanePipeline, cfg_from_profile
 from dracer_core.control_core import Controller, make_ctrl
 from dracer_core.profile import load_profile, section
@@ -38,13 +40,17 @@ def perception_from_profile(profile_path):
     return cfg_from_profile(psec)
 
 
-def run(video, csv_path, cfg, controllers, out_path):
+def run(video, csv_path, cfg, cam, controllers, out_path):
     rows = cm.read_csv(csv_path)
     ftime = cm.col(rows, 'frame_time')
     steer = cm.col(rows, 'manual_steering', default=0.0)
     throttle = cm.col(rows, 'manual_throttle', default=0.0)
 
-    pipe = LanePipeline(cfg)
+    # cam is REQUIRED. This used to call LanePipeline(cfg) with no camera -- i.e. it
+    # predicted controller commands from the FRONT-VIEW pipeline, which is not the one the
+    # car runs. Stage 4 then picked a controller on those predictions. That was a bug, not
+    # a mode, and the front-view path is now gone.
+    pipe = LanePipeline(cfg, cam)
     ctrls = {c: Controller(make_ctrl(c)) for c in controllers}
 
     fields = (['frame_time', 'center_error', 'ema', 'heading', 'confidence',
@@ -81,16 +87,21 @@ def main():
     ap.add_argument('video')
     ap.add_argument('--csv', required=True, help='paired manual drive log (recorder csv)')
     ap.add_argument('--profile', help='perception profile (stage-2 selected)')
+    ap.add_argument('--camera', required=True,
+                    help='camera.yaml -> metric BEV. REQUIRED: the car runs the BEV '
+                         'pipeline, so predicting its commands from anything else is '
+                         'predicting a different vehicle.')
     ap.add_argument('--controllers', default='C1,C2,C3,C4,C5')
     ap.add_argument('--output')
     args = ap.parse_args()
 
     controllers = [c.strip() for c in args.controllers.split(',') if c.strip()]
     cfg = perception_from_profile(args.profile)
+    cam = CameraModel.load(os.path.expanduser(args.camera))
     base = cm.clip_name(args.video)
     out = args.output or f'rslt/pred_{base}.csv'
     os.makedirs(os.path.dirname(out) or '.', exist_ok=True)
-    run(args.video, args.csv, cfg, controllers, out)
+    run(args.video, args.csv, cfg, cam, controllers, out)
 
 
 if __name__ == '__main__':

@@ -10,9 +10,11 @@ Topics:
   pub : /lane/state               (dracer_msgs/LaneState)
   pub : /lane/debug/compressed    (sensor_msgs/CompressedImage)  # 다패널 디버그(BEV footprint|mask|검출)
 Params:
+  camera (camera.yaml -> metric BEV; REQUIRED, the node refuses to start without it),
   profile ([perception] section seeds tuning), debug_scale, jpeg_quality, log_hz,
-  publish_debug, plus every perception_core.Cfg field as a LIVE param
-  (`ros2 param set` rebuilds the pipeline on change).
+  publish_debug, rate_floor_hz, plus every perception_core.Cfg field as a LIVE param
+  (`ros2 param set` rebuilds the pipeline on change) -- EXCEPT the DERIVED_PX ones, which
+  cfg_to_px computes and which used to accept a `param set` and silently ignore it.
 
 The debug panel is built ONLY when `publish_debug` and someone is subscribed to it — it
 costs more than the whole detector, so it must never run just because it might be wanted.
@@ -33,7 +35,8 @@ from sensor_msgs.msg import CompressedImage
 from dracer_msgs.msg import LaneState
 
 from dracer_core.calib import CameraModel
-from dracer_core.perception_core import Cfg, LanePipeline, cfg_from_profile, render_panels
+from dracer_core.perception_core import (DERIVED_PX, Cfg, LanePipeline, cfg_from_profile,
+                                         render_panels)
 from dracer_core.profile import load_profile, section
 
 
@@ -49,7 +52,7 @@ class PerceptionNode(Node):
         self.declare_parameter('state_topic', '/lane/state')
         self.declare_parameter('debug_topic', '/lane/debug/compressed')
         self.declare_parameter('profile', '')      # [perception] section applied
-        self.declare_parameter('camera', '')       # camera.yaml -> metric BEV ('' = front-view)
+        self.declare_parameter('camera', '')       # camera.yaml -> metric BEV. REQUIRED.
         self.declare_parameter('jpeg_quality', 80)
         self.declare_parameter('debug_scale', 2.0)
         self.declare_parameter('log_hz', 2.0)
@@ -64,10 +67,16 @@ class PerceptionNode(Node):
         self.log_hz = float(gp('log_hz').value)
         self.publish_debug = bool(gp('publish_debug').value)
 
-        # Perception tuning: every Cfg field is a live ROS param. The profile
-        # [perception] section seeds them; `ros2 param set` (or the monitor
-        # sliders) rebuilds the pipeline live via the on-set callback.
-        self._cfg_fields = [f.name for f in dc_fields(Cfg) if f.name != 'name']
+        # Perception tuning: every Cfg field is a live ROS param -- EXCEPT the ones
+        # `cfg_to_px` computes (DERIVED_PX). Those are outputs, not inputs, and declaring
+        # them was a trap: `ros2 param set /perception_node sw_margin 40` reported success,
+        # logged a live-update, rebuilt the pipeline (throwing away the Tracker's state) and
+        # changed NOTHING, because cfg_to_px overwrote it on the way in. And `sw_margin` /
+        # `jump_max` are exactly what you reach for when detection misbehaves trackside.
+        # Not declaring them means ROS refuses the `param set` outright, loudly. The real
+        # knobs are the `_cm` twins.
+        self._cfg_fields = [f.name for f in dc_fields(Cfg)
+                            if f.name != 'name' and f.name not in DERIVED_PX]
         profile_path = os.path.expanduser(str(gp('profile').value))
         psec = section(load_profile(profile_path), 'perception') if profile_path else {}
         base = Cfg()
@@ -86,21 +95,20 @@ class PerceptionNode(Node):
         if profile_path:
             self.get_logger().info(f'perception: loaded profile {profile_path}')
 
-        # Calibrated camera -> metric BEV. Absent/unreadable -> front-view (legacy),
-        # so a missing camera.yaml degrades instead of taking the vehicle down.
+        # Calibrated camera -> metric BEV. REQUIRED. There is no front-view fallback any
+        # more, and "degrade gracefully" was the wrong instinct here: the fallback was a
+        # different pipeline with screen-space thresholds nobody had tuned, and it would
+        # have driven the car. Failing to start is the safe outcome -- control_node's
+        # perception watchdog then sees no /lane/state and publishes neutral, so the car
+        # simply does not move.
         cam_path = os.path.expanduser(str(gp('camera').value))
-        self.cam = None
-        if cam_path:
-            try:
-                self.cam = CameraModel.load(cam_path)
-                self.get_logger().info(f'perception: BEV {self.cam.summary()}')
-            except Exception as exc:  # noqa: BLE001
-                self.get_logger().error(
-                    f'perception: camera.yaml 로드 실패 ({cam_path}): {exc} '
-                    '— front-view 로 계속한다')
-        else:
-            self.get_logger().warning('perception: camera 파라미터 없음 → front-view '
-                                      '(BEV 미적용, PERCEPTION.md §6 한계 그대로)')
+        if not cam_path:
+            raise RuntimeError(
+                'perception: `camera` 파라미터가 비어 있다. camera.yaml 은 필수다 — '
+                'front-view 경로는 삭제됐고, 모든 문턱값이 cm 단위라 BEV 없이는 의미가 없다. '
+                'drive.launch 는 기본값으로 넘긴다.')
+        self.cam = CameraModel.load(cam_path)     # 실패하면 여기서 죽는다. 그게 맞다.
+        self.get_logger().info(f'perception: BEV {self.cam.summary()}')
         self.cfg = self._build_cfg()
         self.pipeline = LanePipeline(self.cfg, self.cam)
         self.add_on_set_parameters_callback(self._on_set_params)
@@ -178,7 +186,7 @@ class PerceptionNode(Node):
         without touching the calibration.
         """
         h, w = frame.shape[:2]
-        if self.cam is None or tuple(self.cam.image_size) == (w, h):
+        if tuple(self.cam.image_size) == (w, h):
             return
         old = self.cam.image_size
         self.cam = self.cam.match((w, h))

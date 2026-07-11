@@ -12,11 +12,6 @@ name: track2025
 
 perception:
   colors: [white, yellow]  # white+yellow fused
-  # FRONT-VIEW ONLY (camera:='' ). With a camera.yaml the BEV LUT is itself a calibrated
-  # trapezoid crop and these are ignored — measured against this camera the hand-tuned one
-  # removed a further 3.7% of the valid BEV and nothing else.
-  roi_top_frac: 0.30       # 2025 dashcam heatmap (yellow/roundabout keeps more height)
-  trap_top_w: 0.80
   yellow_h_lo: 18          # 2025 dashcam measured band (H 22-32, S>=66, V>=112)
   yellow_h_hi: 36
   yellow_s_min: 65

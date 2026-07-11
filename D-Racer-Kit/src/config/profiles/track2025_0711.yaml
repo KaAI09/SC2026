@@ -20,8 +20,6 @@ name: track2025_0711_rollback
 
 perception:
   colors: [white, yellow]
-  roi_top_frac: 0.30
-  trap_top_w: 0.80
   yellow_h_lo: 18
   yellow_h_hi: 36
   yellow_s_min: 65

@@ -14,17 +14,16 @@ Stage order, and why (`LanePipeline.process` marks the seam):
            the same thing at 26cm and at 78cm. `cfg_to_px` resolves the cm config to BEV
            px once; every stage below it keeps taking plain pixels.
 
-With a CameraModel the LUT is itself a calibrated trapezoid crop, so the legacy
-hand-tuned `roi_*` trapezoid is redundant and is skipped. Without one (cam=None) the
-front-view path is unchanged, thresholds keep their legacy screen-space meaning, and
-PERCEPTION.md §6 limitations apply.
+A CameraModel is REQUIRED. The front-view path is gone -- it was a second pipeline, not a
+fallback: every threshold here is in cm, and the physical gates the pipeline now leans on
+(lane width, pairing, coast side) cannot even be ASKED in a perspective image. The BEV LUT
+is itself a calibrated trapezoid crop, so the old hand-tuned `roi_*` one went with it.
 
-Imported by BOTH the online perception node and the offline control tools
-(offline/control_predict.py). Depends only on cv2 + numpy.
+Imported by BOTH the online perception node and the offline tools. Depends only on cv2 + numpy.
 
 Usage:
     from dracer_core.perception_core import LanePipeline, Cfg, cfg_from_profile
-    pipe = LanePipeline(cfg_from_profile(profile['perception']), cam)   # cam: CameraModel
+    pipe = LanePipeline(cfg_from_profile(profile['perception']), cam)   # cam: REQUIRED
     state = pipe.process(frame_bgr)                 # dict (center_error, ...)
     state, dbg = pipe.process(frame_bgr, debug=True)   # dbg -> render_panels()
 
@@ -59,10 +58,6 @@ class Cfg:
     morph_v: int = 5             # vertical CLOSE kernel (bridge dashed gaps)
     color_gate: float = 0.15     # minority-color fraction < this -> drop it wholesale
     gate_min_px: int = 80
-    # B: ROI trapezoid (front-view crop; was the probe's BEV source region)
-    roi_top_frac: float = 0.30
-    trap_top_w: float = 0.80
-    trap_bot_w: float = 1.0
     # C: sliding window (image coords)
     sw_nwin: int = 12            # vertical window count
     sw_margin: int = 28          # window half-width (px)
@@ -203,6 +198,22 @@ def cfg_from_profile(section=None):
     return replace(Cfg(), **ov) if ov else Cfg()
 
 
+# Cfg fields that `cfg_to_px` COMPUTES from the cm parameters. They are outputs, not
+# inputs: whatever you put in them is overwritten before a single frame is processed.
+#
+# This list exists so `perception_node` can refuse to declare them as ROS parameters. It
+# used to declare every field, so `ros2 param set /perception_node sw_margin 40` would
+# report success, log a live-update, rebuild the pipeline (throwing away the Tracker's
+# state), and change NOTHING -- because cfg_to_px overwrote it on the way in. They look
+# exactly like the knobs you would reach for when detection misbehaves trackside. The real
+# knobs are the `_cm` twins: sw_margin_cm, jump_max_cm, merge_dx_cm, ...
+DERIVED_PX = frozenset({
+    'sw_margin', 'sw_peak_sep', 'merge_dx', 'pair_gap_min', 'jump_max',
+    'morph_v', 'sw_minpix', 'sw_peak_min', 'gate_min_px',
+    'lane_width_default', 'heading_frac',
+})
+
+
 def cfg_to_px(cfg, cam):
     """Resolve the metric (cm) params into BEV pixels — ONCE, here.
 
@@ -210,10 +221,13 @@ def cfg_to_px(cfg, cam):
     window, the pairing and the tracker keep speaking plain pixels and are untouched;
     only their THRESHOLDS change meaning, and that mapping lives in one place.
 
-    cam=None -> front-view: return cfg unchanged (legacy px thresholds).
+    Every field it writes is in `DERIVED_PX`.
     """
     if cam is None:
-        return cfg
+        raise ValueError(
+            'cfg_to_px: CameraModel 이 필요하다. front-view 경로는 삭제됐다 — '
+            '모든 문턱값이 cm 단위이고 물리 게이트(차선폭·페어링·coast)는 metric BEV '
+            '에서만 성립한다. camera.yaml 을 넘겨라.')
     s = cam.px_per_cm
     bev_w = cam.bev_size[0]
     lane_px = cfg.lane_width_cm * s
@@ -272,8 +286,7 @@ def morph_gate(white, yellow, c):
 
     Run on the BEV, `morph_v` is a REAL length (cfg.morph_cm) that means the same thing
     at 26cm and at 78cm, and it also heals the row-replication the nearest-neighbour warp
-    leaves behind. `gate_min_px` likewise becomes a real area. On the front view (cam=None)
-    both keep their legacy screen-space meaning.
+    leaves behind. `gate_min_px` likewise becomes a real area.
     """
     kv = cv2.getStructuringElement(cv2.MORPH_RECT, (3, max(3, c.morph_v)))
     white = cv2.morphologyEx(white, cv2.MORPH_CLOSE, kv)
@@ -289,26 +302,18 @@ def morph_gate(white, yellow, c):
 
 
 def detect(frame, c):
-    """Front-view detection (legacy path + offline probes): colour, then shape."""
+    """Colour, then shape, on a RAW frame. Not on the driving path -- the pipeline runs
+    `color_masks` before the warp and `morph_gate` after it, because a morphology kernel
+    only means one thing in a metric BEV. Kept for `offline/calibrate.py`, which needs
+    lane pixels out of a raw ground photo before any BEV exists."""
     return morph_gate(*color_masks(frame, c), c)
 
 
-# ==========================================================================
-# B: ROI trapezoid (front-view crop)
-# ==========================================================================
-def _roi_polygon(h, w, c):
-    y0 = int(h * c.roi_top_frac)
-    cx = w / 2.0
-    tw, bw = c.trap_top_w * w, c.trap_bot_w * w
-    return y0, np.float32([[cx - bw / 2, h - 1], [cx - tw / 2, y0],
-                           [cx + tw / 2, y0], [cx + bw / 2, h - 1]])
-
-
-def _roi_mask(h, w, c):
-    y0, poly = _roi_polygon(h, w, c)
-    m = np.zeros((h, w), np.uint8)
-    cv2.fillPoly(m, [poly.astype(np.int32)], 255)
-    return m, y0, poly
+# The hand-tuned ROI trapezoid (`roi_top_frac`, `trap_*`) and the whole front-view path
+# are GONE. The BEV LUT is itself a calibrated trapezoid crop of the ground, so the ROI
+# was a crop on top of a crop -- and a hand-guessed one shaving 3.7% off the calibrated
+# one. `cam.src_rows` (the row band the LUT actually samples) replaced it: derived from
+# the calibration, so it cannot disagree with the BEV by construction.
 
 
 # ==========================================================================
@@ -688,7 +693,7 @@ class Tracker:
     def __init__(self, c, h, w, lane_w_px=0.0):
         self.c = c
         self.h, self.w = h, w
-        self.lane_w_px = float(lane_w_px)     # 0 = front-view: no physical width to check
+        self.lane_w_px = float(lane_w_px)     # BEV lane width; the physical width gate
         self.L = self.R = self.width = None
         self.lost = 0
         self.turn = 1
@@ -728,7 +733,7 @@ class Tracker:
 
         `track_width_tol <= 0` restores the pre-0712 "accept anything" behaviour (ROLLBACK.md).
         """
-        if self.lane_w_px <= 0 or self.c.track_width_tol <= 0:
+        if self.c.track_width_tol <= 0:
             return True
         return abs(wdt - self.lane_w_px) <= self.c.track_width_tol * self.lane_w_px
 
@@ -977,20 +982,24 @@ def _heading_deg(coeffs, y_lo, y_hi):
 # Public pipeline (stateful across frames)
 # ==========================================================================
 class LanePipeline:
-    """Lane pipeline. `cam` (dracer_core.calib.CameraModel) switches on the metric BEV.
+    """Lane pipeline. REQUIRES a calibrated `cam` (dracer_core.calib.CameraModel).
 
-    cam=None  -> front-view (legacy). Lane fits are in image coords; every geometric
-                 threshold is a screen fraction; coast shifts by a constant pixel offset
-                 that is only correct in a BEV. Known limitations: PERCEPTION.md §6.
-    cam given -> masks are warped to a calibrated top-down view, so a pixel IS a length.
-                 Lane width, pairing, coast and heading all become physical. `cfg_to_px`
-                 resolves the cm thresholds once; every stage below stays pixel-based.
+    The front-view path is gone. It was not a fallback, it was a second pipeline: lane fits
+    in image coords, every geometric threshold a screen fraction, and a coast that shifts by
+    a constant pixel offset -- which is only a constant DISTANCE in a BEV. None of the
+    physical gates this pipeline now depends on (lane width, pairing, coast side) can even be
+    asked in a perspective image, and the cm config that drives them would be meaningless.
+    Its last caller (`offline/control_predict.py`) was not using it deliberately; it was
+    predicting control commands from a pipeline the car does not run.
 
-    The scalar contract (`center_error` normalised to [-1,1]) is UNCHANGED in both modes,
-    so control needs no retune to A/B this. Switching it to cm is a separate step (P5).
+    A missing camera.yaml is now a hard failure, and that is the safe behaviour: the car
+    does not move (control_node's perception watchdog sees no /lane/state and publishes
+    neutral), instead of driving on a pipeline nobody tuned.
     """
 
-    def __init__(self, cfg, cam=None):
+    def __init__(self, cfg, cam):
+        if cam is None:
+            raise ValueError('LanePipeline: CameraModel 이 필요하다 (front-view 경로는 삭제됨).')
         self.cfg = cfg
         self.cam = cam
         self.c = cfg_to_px(cfg, cam)          # cm -> BEV px, once
@@ -1009,29 +1018,20 @@ class LanePipeline:
         # before the resample is both cheaper (2 x 1ch out vs 1 x 3ch) and sharper (no
         # interpolated in-between colours to fool the HSV gates). Everything after the warp
         # is coordinate-agnostic — it just starts getting metric pixels.
-        if self.cam is not None:
-            # The LUT already crops the ground to a calibrated trapezoid, so the hand-tuned
-            # `roi_*` one is redundant: measured against this camera it removes a further
-            # 3.7% of the valid BEV and nothing else. Dropping it also drops a fillPoly and
-            # two full-frame bitwise_ands. Rows above the LUT's top feed NO BEV cell, so
-            # colour-test only the band it reads (~38% fewer pixels through cvtColor).
-            r0, r1 = self.cam.src_rows
-            mw = np.zeros((h, w), np.uint8)
-            my = np.zeros((h, w), np.uint8)
-            mw[r0:r1], my[r0:r1] = color_masks(bgr[r0:r1], c)
-            mw = self.cam.to_bev(mw)
-            my = self.cam.to_bev(my)
-            # Shape + area judgements now that a pixel IS a length.
-            mw, my = morph_gate(mw, my, c)
-            w, h = self.cam.bev_size
-            lane_w_px = self.cam.lane_width_px(c.lane_width_cm)
-            trap, y0 = self.cam.footprint_poly(), r0
-        else:
-            white, yellow = detect(bgr, c)
-            roi, y0, trap = _roi_mask(h, w, c)
-            mw = cv2.bitwise_and(white, roi)
-            my = cv2.bitwise_and(yellow, roi)
-            lane_w_px = 0.0                   # no physical gate in the front view
+        #
+        # Rows above the LUT's top feed NO BEV cell, so colour-test only the band it reads
+        # (~38% fewer pixels through cvtColor).
+        r0, r1 = self.cam.src_rows
+        mw = np.zeros((h, w), np.uint8)
+        my = np.zeros((h, w), np.uint8)
+        mw[r0:r1], my[r0:r1] = color_masks(bgr[r0:r1], c)
+        mw = self.cam.to_bev(mw)
+        my = self.cam.to_bev(my)
+        # Shape + area judgements now that a pixel IS a length.
+        mw, my = morph_gate(mw, my, c)
+        w, h = self.cam.bev_size
+        lane_w_px = self.cam.lane_width_px(c.lane_width_cm)
+        trap, y0 = self.cam.footprint_poly(), r0
         if self._size != (h, w):
             self._size = (h, w)
             self.trk = Tracker(c, h, w, lane_w_px)
@@ -1098,27 +1098,15 @@ class LanePipeline:
 
 
 # ==========================================================================
-# rendering (front-view; no BEV panels)
+# rendering (camera view + BEV panels)
 # ==========================================================================
-def _draw_curve(img, coeffs, color, thick, y0, y1):
-    h, w = img.shape[:2]
-    ys = np.arange(int(y0), int(y1) + 1)
-    xs = coeffs[0] * ys * ys + coeffs[1] * ys + coeffs[2]
-    pts = np.array([[int(x), int(y)] for x, y in zip(xs, ys) if 0 <= x < w], np.int32)
-    if len(pts) > 1:
-        cv2.polylines(img, [pts], False, color, thick)
-
-
 def _lane_span(ins):
     return int(ins['ys'].min()), int(ins['ys'].max())
 
 
 def _draw_fit(img, coeffs, y0, y1, color, thick, cam):
-    """Draw a lane fit. In BEV mode the fit lives in ground coords -> unwarp it back
-    onto the camera frame, so the overlay a human looks at is always the real view."""
-    if cam is None:
-        _draw_curve(img, coeffs, color, thick, y0, y1)
-        return
+    """Draw a lane fit. The fit lives in BEV ground coords -> unwarp it back onto the
+    camera frame, so the overlay a human looks at is always the real view."""
     pts = cam.bev_coeffs_to_image(coeffs, y0, y1)
     h, w = img.shape[:2]
     p = np.array([[int(x), int(y)] for x, y in pts
@@ -1144,9 +1132,9 @@ def render_panels(bgr, dbg, cfg):
     Built only from `LanePipeline.process(debug=True)` intermediates (no
     re-implementation). perception_node publishes this on /lane/debug/compressed.
 
-    In BEV mode panels 2-3 show the METRIC top-down view (that is where the lanes are
-    actually found), letter-boxed to the frame size so the strip stays uniform, while
-    panels 1 and 4 stay in the camera view a human can read.
+    Panels 2-3 show the METRIC top-down view (that is where the lanes are actually found),
+    letter-boxed to the frame size so the strip stays uniform, while panels 1 and 4 stay in
+    the camera view a human can read.
     """
     h, w = bgr.shape[:2]
     mw, my, lanes = dbg['mw'], dbg['my'], dbg['lanes']
@@ -1175,10 +1163,9 @@ def render_panels(bgr, dbg, cfg):
     p2 = np.zeros((bh, bw, 3), np.uint8)
     p2[mw > 0] = (200, 200, 200)
     p2[my > 0] = (0, 220, 255)
-    if cam is not None:                       # vehicle axis: what center_error is measured from
-        cv2.line(p2, (int(cam.axis_u), 0), (int(cam.axis_u), bh - 1), (0, 0, 120), 1)
+    cv2.line(p2, (int(cam.axis_u), 0), (int(cam.axis_u), bh - 1), (0, 0, 120), 1)  # vehicle axis
     p2 = _fit_panel(p2)
-    _panel(p2, '2 mask' + ('  BEV metric' if cam is not None else '  (W/Y)'))
+    _panel(p2, '2 mask  BEV metric')
 
     # P3: sliding windows + lane points (same coords as the fits)
     p3 = np.zeros((bh, bw, 3), np.uint8)
@@ -1207,10 +1194,8 @@ def render_panels(bgr, dbg, cfg):
                   EGO_CENTER_COLOR, 2, cam)
     if ec is None:
         off = 'off=--'
-    elif cam is not None:
-        off = f"off={ec['offset'] / cam.px_per_cm:+.1f}cm{'(coast)' if ec.get('coast') else ''}"
     else:
-        off = f"off={ec['offset']:+.0f}px{'(coast)' if ec.get('coast') else ''}"
+        off = f"off={ec['offset'] / cam.px_per_cm:+.1f}cm{'(coast)' if ec.get('coast') else ''}"
     _panel(p4, f"4 labels+ego  {off}  {dbg['fstate']}")
 
     return np.hstack([p1, p2, p3, p4])
