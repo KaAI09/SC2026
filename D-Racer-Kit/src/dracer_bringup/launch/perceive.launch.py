@@ -2,7 +2,8 @@
 
 No autonomous actuation (actuator in joystick mode; the human drives). Base
 nodes + perception_node (publishes /lane/state + the debug overlay the monitor
-streams) + recorder (mp4 + csv on joystick START). calibration_mode stays on so
+streams) + recorder (on joystick START: panel/ overlay mp4 + raw/ camera mp4 +
+csv/ log, one shared basename). calibration_mode stays on so
 trim/accel can still be tuned. Tune perception live via `ros2 param set
 /perception_node <field> <value>` and watch the monitor (:5000).
 

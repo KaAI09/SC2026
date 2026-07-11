@@ -33,7 +33,14 @@ def default_profile_path():
 
 
 def default_record_dir():
-    return find_config('bagfile', str(Path.home() / 'bagfile'))
+    """Recorder output root. Sessions land in <root>/{panel,raw,csv}/ (recorder_node).
+
+    NOT via find_config(): a repo-relative search for 'recorder' would resolve to the
+    SOURCE PACKAGE `src/recorder/` and write recordings into the source tree. Recording
+    output is machine-local and git-untracked, so anchor it at $HOME and let a launch
+    argument override it.
+    """
+    return str(Path.home() / 'recorder')
 
 
 def base_nodes(vehicle_config, *, calibration_mode, use_joystick_control, image_topic):

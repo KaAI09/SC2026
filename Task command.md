@@ -44,7 +44,7 @@ export WS=~/SC2026/D-Racer-Kit
 cd "$WS"
 git fetch origin && git checkout kos/track-test2
 git reset --hard origin/kos/track-test2    # ⚠ vehicle_config 복원 → 재캘리브레이션 필요
-git clean -fdx                              # ⚠ build/install/bagfile(mp4·csv) 삭제 — 필요분 먼저 scp(↓D)
+git clean -fdx                              # ⚠ build/install/recorder(mp4·csv) 삭제 — 필요분 먼저 scp(↓D)
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install && source install/setup.bash
 ```
@@ -68,11 +68,12 @@ grep -E "STEER_TRIM|ACCEL_RATIO" "$WS"/src/config/vehicle_config.yaml   # 반영
 
 ### B-2. record — 원본 영상 수집
 ```bash
-ros2 launch dracer_bringup record.launch.py record_dir:=$HOME/bagfile
+ros2 launch dracer_bringup record.launch.py record_dir:=$HOME/recorder
 ```
-- 조이스틱 **START**로 녹화 시작/정지 → 원본 `raw_*.mp4` (`/camera/image/compressed`).
+- 조이스틱 **START**로 녹화 시작/정지. 인지가 없는 런치라 raw가 주 스트림
+  → `recorder/raw/raw_<stamp>.mp4` + `recorder/csv/raw_<stamp>.csv` (panel 없음).
 ```bash
-ls -lt $HOME/bagfile/raw_*.mp4 | head
+ls -lt $HOME/recorder/raw/*.mp4 | head
 ```
 
 ### B-3. perceive — 인지 검증 + 데이터 수집 + live 튜닝
@@ -86,7 +87,11 @@ ros2 topic echo /lane/state --once                # center_error/heading/confide
 ros2 param set /perception_node merge_dx 40.0      # 즉시 반영, 뷰에서 확인
 ros2 param set /perception_node roi_top_frac 0.25
 ```
-- **START** 녹화 → `drive_*.mp4`(4패널 디버그) + `.csv`(LaneState + 수동 command 동기).
+- **START** 녹화 → 한 세션이 같은 basename으로 3개 파일:
+  `recorder/panel/drive_<stamp>.mp4`(4패널 디버그, 우상단에 `f<idx> t<sec>` 각인) +
+  `recorder/raw/drive_<stamp>.mp4`(원본 카메라, **무각인** — 오프라인 재실행·캘리브레이션용) +
+  `recorder/csv/drive_<stamp>.csv`(LaneState + 자율/수동 command). 패널 각인의 `f<idx>`는
+  csv 데이터 행 번호와 1:1이라 캡처 한 장으로 로그를 되짚을 수 있다.
 
 ### B-4. drive — 자율주행 (⚠ 액추에이션)
 ```bash
@@ -154,8 +159,8 @@ cd offline
 
 ```bash
 # D3-G 녹화 → 로컬 (오프라인 분석)   [로컬에서 실행]
-scp topst@<D3-G_IP>:~/bagfile/'raw_*.mp4'           ./offline/rslt/
-scp topst@<D3-G_IP>:~/bagfile/'drive_*.{mp4,csv}'   ./offline/rslt/
+#   한 세션 = panel/raw/csv 3파일이 같은 basename. 오프라인 재실행은 raw를 쓴다.
+scp -r topst@<D3-G_IP>:~/recorder/{panel,raw,csv}   ./offline/rslt/
 
 # 완성 profile 로컬 → D3-G   [git 경유]
 #   로컬: git add ... && git commit && git push

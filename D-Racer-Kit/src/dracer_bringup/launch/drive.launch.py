@@ -6,7 +6,8 @@ with the wheels OFF THE GROUND first, verify perception + steering direction,
 then engage. E-STOP = joystick X.
 
 Base nodes (actuator NOT in joystick mode) + perception_node + control_node +
-recorder. Tune live via `ros2 param set /perception_node <field>` and
+recorder (on joystick START: panel/ overlay mp4 + raw/ camera mp4 + csv/ log, one
+shared basename). Tune live via `ros2 param set /perception_node <field>` and
 `/control_node <gain>`; watch the monitor (:5000).
 
     ros2 launch dracer_bringup drive.launch.py                    # engage stays false

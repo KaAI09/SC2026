@@ -30,6 +30,8 @@ log/
 *.db3-wal
 *.db3-shm
 D-Racer-Kit/bagfile/
+/recorder/           # 녹화 산출물(panel/raw/csv). 기본은 $HOME/recorder — 레포에 둘 때만 해당.
+                     # 주의: `recorder/`(슬래시 없이)로 쓰면 소스 패키지 src/recorder 까지 무시된다
 offline/rslt/
 
 # Local training outputs

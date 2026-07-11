@@ -2,10 +2,11 @@
 
 Base nodes + recorder capturing the RAW camera stream (not the perception
 overlay) so offline perception (offline/perception_probe.py) sees unannotated
-frames. No perception. Joystick START toggles each recording session.
+frames. No perception -> raw IS the main stream, so the recorder writes only
+raw/ + csv/ (no panel/). Joystick START toggles each recording session.
 
     ros2 launch dracer_bringup record.launch.py
-    ros2 launch dracer_bringup record.launch.py record_dir:=$HOME/bagfile
+    ros2 launch dracer_bringup record.launch.py record_dir:=$HOME/recorder
 """
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
