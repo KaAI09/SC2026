@@ -32,9 +32,21 @@ class JoystickNode(Node):
         self.declare_parameter('throttle_deadzone', 0.05)
         self.declare_parameter('steering_deadzone', 0.05)
         self.declare_parameter('steering_axis', 'auto')
-        self.declare_parameter('steering_trim', 0.0)
+        # 서보 중립(us). 예전의 steering_trim(-1~1, 명령에 더하던 값)을 대체한다.
+        # 트림은 서보의 중립이지 명령의 일부가 아니다 — 명령에 더하면 u 와 트림이 같은
+        # [-1,1] 예산을 나눠 쓰고 한쪽 조향 권한이 조용히 깎인다.
+        self.declare_parameter('steer_center_us', 1500.0)
+        # 중립 조정 범위 = 서보 하드 clip (1250~2050). 서보는 여기까지 무리 없이 돈다.
+        #
+        # ⚠ 중립을 실측값(1650)에서 크게 옮기면 한쪽 여유가 조향 반경(300us)보다 좁아지고,
+        # actuator 가 대칭을 지키려고 실효 span 을 그만큼 줄인다 = 조향각이 줄어든다.
+        # 예: 중립 1500 -> 좌우 여유 min(550, 250) = 250us -> ±20.8도.
+        # 트림 보정은 실측값 근처 몇 스텝이면 된다. 그보다 크게 벗어나야 한다면 그것은
+        # 트림이 아니라 서보 혼/링키지를 기계적으로 다시 맞추라는 신호다.
+        self.declare_parameter('steer_center_min_us', 1250.0)
+        self.declare_parameter('steer_center_max_us', 2050.0)
         self.declare_parameter('calibration_mode', False)
-        self.declare_parameter('calibration_step', 0.1)
+        self.declare_parameter('calibration_step', 10.0)        # us (예전엔 0.1 = percent)
         self.declare_parameter('vehicle_config_file', get_default_vehicle_config_path())
         self.declare_parameter('accel_ratio_step', 0.005)
         self.declare_parameter('accel_ratio_min', 0.12)
@@ -51,7 +63,9 @@ class JoystickNode(Node):
         self.throttle_deadzone = float(self.get_parameter('throttle_deadzone').value)
         self.steering_deadzone = float(self.get_parameter('steering_deadzone').value)
         self.steering_axis = str(self.get_parameter('steering_axis').value)
-        self.steering_trim = float(self.get_parameter('steering_trim').value)
+        self.steer_center_us = float(self.get_parameter('steer_center_us').value)
+        self.center_min_us = float(self.get_parameter('steer_center_min_us').value)
+        self.center_max_us = float(self.get_parameter('steer_center_max_us').value)
         self.calibration_mode = bool(self.get_parameter('calibration_mode').value)
         self.calibration_step = float(self.get_parameter('calibration_step').value)
         self.vehicle_config_file = os.path.expanduser(
@@ -114,8 +128,8 @@ class JoystickNode(Node):
             f'Joystick node started: topic={publish_topic}, publish_hz={self.publish_hz}, '
             f'throttle_scale={self.throttle_scale}, throttle_deadzone={self.throttle_deadzone}, '
             f'steering_deadzone={self.steering_deadzone}, steering_axis={self.steering_axis}, '
-            f'steering_trim={self.steering_trim}, calibration_mode={self.calibration_mode}, '
-            f'calibration_step={self.calibration_step}, vehicle_config_file={self.vehicle_config_file}, '
+            f'steer_center_us={self.steer_center_us:.0f}, calibration_mode={self.calibration_mode}, '
+            f'calibration_step={self.calibration_step}us, vehicle_config_file={self.vehicle_config_file}, '
             f'accel_ratio={self.accel_ratio}, accel_ratio_step={self.accel_ratio_step}, '
             f'accel_ratio_min={self.accel_ratio_min}, accel_ratio_max={self.accel_ratio_max}, '
             f'debug_log_enable={self.debug_log_enable}, debug_log_hz={self.debug_log_hz}'
@@ -142,12 +156,18 @@ class JoystickNode(Node):
             )
             return
 
-        saved_trim = calibration_data.get('STEER_TRIM')
-        if saved_trim is not None:
-            self.steering_trim = float(saved_trim)
+        saved_center = calibration_data.get('SERVO_CENTER_US')
+        if saved_center is not None:
+            self.steer_center_us = float(saved_center)
             self.set_parameters([
-                Parameter('steering_trim', Parameter.Type.DOUBLE, self.steering_trim),
+                Parameter('steer_center_us', Parameter.Type.DOUBLE, self.steer_center_us),
             ])
+        elif calibration_data.get('STEER_TRIM') is not None:
+            # 옛 캘리브레이션. 조용히 무시하면 차가 예전과 다르게 서서 원인을 못 찾는다.
+            self.get_logger().warning(
+                'vehicle_config 에 옛 STEER_TRIM 이 있고 SERVO_CENTER_US 가 없다. '
+                '트림은 서보 중립으로 옮겼다 — scripts/servo_sweep.py 로 실측하고 '
+                'SERVO_CENTER_US 를 넣어라. 지금은 중립을 기본값으로 둔다.')
 
         saved_accel = calibration_data.get('ACCEL_RATIO')
         if saved_accel is not None:
@@ -171,35 +191,46 @@ class JoystickNode(Node):
                     f'Failed to merge existing vehicle config {self.vehicle_config_file}: {exc}'
                 )
 
-        config_data['STEER_TRIM'] = float(self.steering_trim)
+        config_data['SERVO_CENTER_US'] = float(self.steer_center_us)
         config_data['ACCEL_RATIO'] = float(self.accel_ratio)
 
         with open(self.vehicle_config_file, 'w', encoding='utf-8') as calibration_stream:
             yaml.safe_dump(config_data, calibration_stream, sort_keys=False)
 
     def update_steering_trim_from_buttons(self, data):
+        """Y/B -> 서보 중립을 ±step us 옮긴다. actuator 가 메시지로 받아 즉시 반영한다.
+
+        예전에는 이 버튼이 명령에 더하는 트림(-1~1)을 움직였다. 그것이 u 와 서보 예산을
+        나눠 쓰게 만든 장본인이다. 이제는 서보의 중립 자체를 움직이므로, 맞추고 나면
+        u=0 이 진짜 직진이고 u 는 ±1.0 전체를 대칭으로 쓴다.
+        """
         if not self.calibration_mode:
             return
 
         y_pressed = bool(data.button_y)
         b_pressed = bool(data.button_b)
-        trim_changed = False
+        changed = False
 
         if y_pressed and not self._prev_y_pressed:
-            self.steering_trim = self.clamp(self.steering_trim - self.calibration_step)
-            trim_changed = True
+            self.steer_center_us = self.clamp(
+                self.steer_center_us - self.calibration_step,
+                self.center_min_us, self.center_max_us)
+            changed = True
 
         if b_pressed and not self._prev_b_pressed:
-            self.steering_trim = self.clamp(self.steering_trim + self.calibration_step)
-            trim_changed = True
+            self.steer_center_us = self.clamp(
+                self.steer_center_us + self.calibration_step,
+                self.center_min_us, self.center_max_us)
+            changed = True
 
-        if trim_changed:
+        if changed:
             self.set_parameters([
-                Parameter('steering_trim', Parameter.Type.DOUBLE, self.steering_trim),
+                Parameter('steer_center_us', Parameter.Type.DOUBLE, self.steer_center_us),
             ])
             try:
                 self.save_calibration()
-                self.get_logger().info(f'steering_trim updated to {self.steering_trim:.2f}')
+                self.get_logger().info(
+                    f'steer_center_us updated to {self.steer_center_us:.0f} us')
             except Exception as exc:
                 self.get_logger().error(f'Failed to save steering calibration: {exc}')
 
@@ -317,7 +348,8 @@ class JoystickNode(Node):
             self.read_steering_axis(data),
             self.steering_deadzone,
         )
-        steering = self.clamp(steering + self.steering_trim)
+        # 트림을 더하지 않는다. 0 = 직진이고, 그것은 서보의 중립(steer_center_us)이 만든다.
+        steering = self.clamp(steering)
         if self.e_stop_latched:
             throttle = 0.0
 
@@ -337,6 +369,10 @@ class JoystickNode(Node):
         control_msg.throttle = float(throttle)
         msg.control_msg = control_msg
         msg.accel_ratio = float(self.accel_ratio)
+        # 서보 중립을 함께 싣는다 — actuator 가 이걸로 서보를 즉시 갱신한다.
+        # 자율 주행 중에도 유효하다: 서보 중립은 '누가 운전하는가' 가 아니라
+        # '이 차가 어떻게 생겼는가' 의 속성이다.
+        msg.steer_center_us = float(self.steer_center_us)
         msg.e_stop_en = bool(self.e_stop_latched)
         msg.is_recording = bool(self.is_recording)
         msg.engage = bool(self.engage_latched)
@@ -354,7 +390,7 @@ class JoystickNode(Node):
             f'right_x={self._debug_right_x:.2f} right_y={self._debug_right_y:.2f} \n'
             f'steering={self._debug_steering:.2f} throttle={self._debug_throttle:.2f} \n'
             f'accel_ratio={self.accel_ratio:.3f} \n'
-            f'trim={self.steering_trim:.2f} \n'
+            f'steer_center={self.steer_center_us:.0f}us \n'
             f'e_stop={int(self.e_stop_latched)} \n'
             f'recording={int(self.is_recording)} \n'
             f'L1={l1_state} R1={r1_state}\n'

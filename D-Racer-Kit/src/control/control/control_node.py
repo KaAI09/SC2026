@@ -116,9 +116,11 @@ class ControlNode(Node):
         p('ki', 0.0)
         p('i_clamp', 0.5)       # PID anti-windup bound (unused by PD)
         p('center_target', 0.0)
-        p('steer_max', 0.7)   # = 1.0 - |STEER_TRIM|; above this the actuator's trim clips
+        p('steer_max', 1.0)   # the trim lives in the servo centre now -> +-1.0 is symmetric
         p('steer_sign', 1.0)
-        p('slew_rate_per_sec', 4.5)   # = the old 0.15/step at the 30Hz the 0711 runs hit
+        p('slew_rate_per_sec', 7.5)   # 0712 ran 187.5 deg/s; at the post-A1 scale (25 deg/u)
+                                      # that is 7.5 u/s. It is a u-rate, not a degree-rate, so
+                                      # the servo rescale moves it exactly like kp.
         p('dt_max', 0.1)
         p('out_ema', 0.0)
         p('throttle_base', 0.13)

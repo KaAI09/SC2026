@@ -87,8 +87,11 @@ def main():
     writer, states = None, []
     out_path = a.out or os.path.join(os.path.dirname(a.raw) or '.',
                                      cm.clip_name(a.raw) + '_panel.mp4')
-    for frame in cm.iter_frames(a.raw):
-        st, dbg = pipe.process(frame, debug=True)
+    # 인지 문턱값·EMA 가 전부 시간 단위라 파이프라인은 dt 를 요구한다. 재생에서는 클립의
+    # fps 가 그 dt 다 — 보드가 그 프레임들을 실제로 받은 간격이 그것이기 때문이다.
+    dt_s = 1.0 / fps
+    for i, frame in enumerate(cm.iter_frames(a.raw)):
+        st, dbg = pipe.process(frame, 0.0 if i == 0 else dt_s, debug=True)
         states.append(st)
         if a.no_video:
             continue

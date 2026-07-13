@@ -385,7 +385,7 @@ def calibrate_intrinsics(images, pattern, square_mm):
     return K, D.ravel(), float(rms), len(obj_pts), size
 
 
-def ground_pose(img, K, D, pattern, square_mm):
+def ground_pose(img, K, D, pattern, square_mm, board_offset_cm=0.0):
     """H from ONE photo of the board lying on the ground -- WITHOUT measuring near_cm.
 
     The board IS the ground plane, so solvePnP recovers where the camera sits relative
@@ -418,7 +418,24 @@ def ground_pose(img, K, D, pattern, square_mm):
     R, _ = cv2.Rodrigues(rvec)                             # board -> camera
     C = (-R.T @ tvec).ravel()                              # camera centre, BOARD coords (mm)
     axis = R.T @ np.array([0.0, 0.0, 1.0])                 # optical axis, board coords
-    height_mm = abs(float(C[2]))
+
+    # The board is not always ON the ground: mounted on foam-core, or propped up, it sits
+    # `board_offset_cm` above it. solvePnP then solves the BOARD plane, and every distance
+    # downstream is measured to a phantom plane floating above the tarmac -- the camera reads
+    # LOWER than it is by exactly that offset, and the whole BEV is the wrong scale. Nothing
+    # in the numbers looks wrong; the ground rms is even excellent, because the fit to the
+    # BOARD is excellent. It just is not the ground.
+    #
+    # The fix is exact, not a fudge: solvePnP already gave us the full pose, so we can write
+    # the homography of ANY plane parallel to the board. The ground is the plane at
+    # z = -offset (board z points at the camera, so the ground is on the far side):
+    #
+    #     p_cam = R @ [x, y, zg] + t = [R0 | R1 | R2*zg + t] @ [x, y, 1]
+    #     H_plane->img = K @ [R0 | R1 | R2*zg + t]
+    #
+    # offset = 0 reproduces the original path exactly (zg = 0).
+    zg = -math.copysign(board_offset_cm * 10.0, float(C[2]))    # ground plane, board coords
+    height_mm = abs(float(C[2]) - zg)                      # camera -> GROUND, not -> board
 
     fwd = np.array([axis[0], axis[1]], float)              # optical axis on the board plane
     nf = np.linalg.norm(fwd)
@@ -434,9 +451,26 @@ def ground_pose(img, K, D, pattern, square_mm):
     ground = np.stack([(rel @ right) / 10.0, (rel @ fwd) / 10.0], -1).astype(np.float32)
 
     und = cv2.undistortPoints(corners, K, D, P=K).reshape(-1, 2)
-    Hg, _ = cv2.findHomography(und, ground, method=0)
-    proj = cv2.perspectiveTransform(und.reshape(-1, 1, 2), Hg).reshape(-1, 2)
+    # rms is always measured against the BOARD plane -- that is where the corners actually
+    # are, and it is the only thing this photo can verify. It reports the fit quality; it
+    # does not (and cannot) tell you whether the board was really on the ground.
+    Hb, _ = cv2.findHomography(und, ground, method=0)
+    proj = cv2.perspectiveTransform(und.reshape(-1, 1, 2), Hb).reshape(-1, 2)
     rms = float(np.sqrt(((proj - ground) ** 2).sum(axis=1).mean()))
+
+    if abs(zg) < 1e-9:
+        Hg = Hb                                            # on the ground: fit directly
+    else:
+        # image -> board-plane xy (mm) at z = zg, then that -> ground frame (cm).
+        Rt = np.column_stack([R[:, 0], R[:, 1], R[:, 2] * zg + tvec.ravel()])
+        H_img2plane = np.linalg.inv(K @ Rt)
+        A = np.array([                                     # board xy (mm) -> ground frame (cm)
+            [right[0], right[1], -float(right @ C[:2])],
+            [fwd[0],   fwd[1],   -float(fwd @ C[:2])],
+            [0.0,      0.0,      10.0],                    # the 10 does the mm -> cm
+        ])
+        Hg = A @ H_img2plane
+
     return (Hg, height_mm / 10.0, float(ground[:, 1].min()),
             float(ground[:, 0].mean()), rms)
 

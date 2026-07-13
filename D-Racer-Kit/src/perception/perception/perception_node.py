@@ -70,8 +70,8 @@ class PerceptionNode(Node):
         # Perception tuning: every Cfg field is a live ROS param -- EXCEPT the ones
         # `cfg_to_px` computes (DERIVED_PX). Those are outputs, not inputs, and declaring
         # them was a trap: `ros2 param set /perception_node sw_margin 40` reported success,
-        # logged a live-update, rebuilt the pipeline (throwing away the Tracker's state) and
-        # changed NOTHING, because cfg_to_px overwrote it on the way in. And `sw_margin` /
+        # logged a live-update, and changed NOTHING, because cfg_to_px overwrote it on the way
+        # in -- it is a value cfg_to_px WRITES. And `sw_margin` /
         # `jump_max` are exactly what you reach for when detection misbehaves trackside.
         # Not declaring them means ROS refuses the `param set` outright, loudly. The real
         # knobs are the `_cm` twins.
@@ -134,11 +134,11 @@ class PerceptionNode(Node):
 
         self._last_log = self.get_clock().now()
         self._log_period = 1.0 / self.log_hz if self.log_hz > 0 else 0.0
-        # Achieved rate. Nothing measured this, so a slowdown was invisible -- and the rate
-        # is not cosmetic: control's `dt` comes from these stamps, and several perception
-        # thresholds (outlier_relatch, lost_stop_frames, lost_reset) are FRAME counts whose
-        # real duration stretches as the rate falls. The 0711 runs held 30.0Hz with a worst
-        # gap of 38ms over 1502 frames and zero drops; anything materially under that is a
+        # Achieved rate. Nothing measured this, so a slowdown was invisible. The perception
+        # thresholds no longer stretch with it (they are durations now, fed by `_tick`), but
+        # the rate still matters on its own: it IS latency, control's `dt` comes from these
+        # stamps, and the gains were tuned at 30Hz. The 0711 runs held 30.0Hz with a worst gap
+        # of 38ms over 1502 frames and zero drops; anything materially under that is a
         # different machine from the one the gains were tuned on, and you should hear about it.
         self._rate_floor = float(self.declare_parameter('rate_floor_hz', 24.0).value)
         self._t_prev = None
@@ -164,12 +164,20 @@ class PerceptionNode(Node):
         return cfg_from_profile(d)
 
     def _on_set_params(self, params):
-        """Live: rebuild the pipeline when any perception param is set."""
-        if {p.name for p in params} & set(self._cfg_fields):
+        """Live: swap the config INTO the running pipeline. State survives.
+
+        This used to do `self.pipeline = LanePipeline(...)`, which reset the Tracker's
+        left/right identity, its width EMA and the centre EMA -- so every live tune punched a
+        perception discontinuity into the drive, and the only advice we could give was "stop
+        the car first". `reconfigure` keeps the measurement and swaps only the judgement.
+        """
+        touched = {p.name for p in params} & set(self._cfg_fields)
+        if touched:
             ov = {p.name: p.value for p in params if p.name in self._cfg_fields}
             self.cfg = self._build_cfg(ov)
-            self.pipeline = LanePipeline(self.cfg, self.cam)
-            self.get_logger().info(f'perception live-update: {list(ov)}')
+            self.pipeline.reconfigure(self.cfg)
+            self.get_logger().info(
+                f'perception live-update: {sorted(ov)} (Tracker/EMA 상태 유지)')
         return SetParametersResult(successful=True)
 
     def _match_camera(self, frame):
@@ -209,37 +217,53 @@ class PerceptionNode(Node):
         # drive.launch now points the monitor and the recorder at the raw camera, so this
         # count is 0 while driving and the cost disappears; attach rqt (or point the
         # recorder back at /lane/debug/compressed) and it switches itself on.
+        # Perception's clock. Every filter and failsafe threshold in the pipeline is a
+        # physical duration now, so dt must be measured BEFORE the frame is processed and
+        # handed in -- the pipeline owns neither the clock nor the stamps.
+        dt_s = self._tick()
+
         if self.publish_debug and self.debug_pub.get_subscription_count() > 0:
-            state, dbg = self.pipeline.process(frame, debug=True)
+            state, dbg = self.pipeline.process(frame, dt_s, debug=True)
             self._publish_state(state, msg.header.stamp)
             self._publish_debug(render_panels(frame, dbg, self.cfg), msg.header.stamp)
         else:
-            state = self.pipeline.process(frame)
+            state = self.pipeline.process(frame, dt_s)
             self._publish_state(state, msg.header.stamp)
-        self._track_rate()
         self._maybe_log(state)
 
-    def _track_rate(self):
-        """Measure the achieved perception rate and complain if it sags."""
+    def _tick(self):
+        """Advance perception's clock: return dt (s) since the previous frame, and complain
+        if the achieved rate sags.
+
+        First frame returns 0.0 -- no time has passed, so the pipeline's EMAs seed instead of
+        blending. A LONG gap is passed through as-is, deliberately: after a dropout the stored
+        EMAs are older than their own time constant and the honest thing is to forget them
+        (`_ema_alpha` -> 1) and to let `lost_stop_s` fire. Clamping the gap would hide a
+        dropout from exactly the failsafes that exist to catch it.
+        """
         now = self.get_clock().now()
+        dt = 0.0
         if self._t_prev is not None:
             dt = (now - self._t_prev).nanoseconds / 1e9
-            if 0.0 < dt < 1.0:
+            if 0.0 < dt < 1.0:      # the RATE estimate ignores outliers; `dt` itself does not
                 self._dt_ema = dt if self._dt_ema is None else 0.9 * self._dt_ema + 0.1 * dt
         self._t_prev = now
+        dt = max(0.0, dt)
         if self._dt_ema is None or self._rate_floor <= 0.0:
-            return
+            return dt
         hz = 1.0 / self._dt_ema
         if hz < self._rate_floor:
             if self._slow_since is None:
                 self._slow_since = now
                 self.get_logger().warning(
                     f'perception {hz:.1f}Hz < rate_floor {self._rate_floor:.0f}Hz. '
-                    '제어 게인(kp 0.45)과 프레임 단위 문턱값(outlier_relatch)은 30Hz 에서 '
-                    '검증된 값이다 — 이 속도에서는 검증 밖이다.')
+                    '인지 문턱값은 이제 시간 단위라 이 속도에서도 같은 뜻을 갖는다 — 하지만 '
+                    '제어 게인(kp 0.45)은 30Hz 에서 검증된 값이고, 무엇보다 이 레이트 자체가 '
+                    '지연이다.')
         elif self._slow_since is not None:
             self._slow_since = None
             self.get_logger().info(f'perception rate recovered: {hz:.1f}Hz')
+        return dt
 
     @property
     def rate_hz(self):

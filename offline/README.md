@@ -12,6 +12,8 @@ cd ~/workspace/SC2026
 |---|---|
 | **`panel_replay.py`** ⭐ | 주행 raw → 4패널 재구성 + 실차 csv 대조 + 파라미터 A/B |
 | `calibrate.py` | 체커보드·지면 사진 → `camera.yaml` (K/D + 호모그래피 H) |
+| `color_gate_probe.py` | `color_gate` 가 진짜 차선을 지우는지 센다 (남은 작업 B4) |
+| `make_lane_target.py` | 직선 차선 검증 타깃 → A4 타일 PDF (트랙 없이 `--check`) |
 | `_common.py` | 영상/CSV/profile IO 헬퍼 |
 
 데이터 (git 미추적 — scp 로 가져온다):
@@ -48,25 +50,91 @@ cd ~/workspace/SC2026
 중앙값·p90·최대). **중앙값 < 0.02 면 재현 일치** — 오프라인 튜닝을 믿어도 되는지에 대한
 검증이다.
 
+## color_gate_probe — B4 를 세는 도구
+
+```bash
+.venv/bin/python offline/color_gate_probe.py offline/rslt/<세션>/raw/*.mp4 \
+    --camera D-Racer-Kit/src/config/camera.yaml \
+    --profile D-Racer-Kit/src/config/profiles/track2025.yaml
+```
+
+`color_gate` 를 켠 패스와 끈 패스를 **프레임 단위로 대조**한다. 핵심 숫자는 하나 —
+**"게이트가 분기를 숨긴 프레임"** (B 에선 코리도어 2개, A 에선 1개 이하). 0 이면 게이트는
+그 데이터에서 무해하다.
+
+0712 성공 주행: kill 14프레임(1.1%), **숨긴 분기 0**, 게이트 on/off 시 `n_corridors` 완전
+동일. 정작 죽는 건 흰색(57.7%)이었다 — 이 트랙은 두 색이 거의 배타적이라(`y_frac` 중앙값
+0.983) 게이트가 "다수색 구간의 잔재 청소부" 로 일한다. **노란 분기 진입 구간을 담은 주행이
+있어야 B4 를 판정할 수 있다.**
+
+## make_lane_target — 트랙 없이 캘리브를 검증하는 인쇄 타깃
+
+`--check` 는 **차선 두 개가 보이는 직선 구간**을 요구한다. 트랙이 없으면 캘리브를 검증할 수
+없고, **검증 안 된 캘리브는 조용히 틀린다** — 스티어링 버그처럼 보이는 종류로. 그래서 트랙
+한 조각(검정 노면 + 흰 차선 2줄, 실제와 같은 35cm 폭)을 인쇄한다.
+
+```bash
+.venv/bin/python offline/make_lane_target.py --out offline/calib/lane_target.pdf
+# 이미 생성돼 있다: offline/calib/lane_target.pdf  (A4 5쪽 = 2x2 타일 + 안내)
+```
+
+- **A4 4장(2×2) = 40 × 57.4cm.** 한 장으로는 안 된다 — 차선폭 35cm + 테이프 3cm = **38cm** 가
+  필요한데 A4 는 21cm 이고, BEV 는 전방 26~78cm(**깊이 52cm**)를 보는데 A4 세로는 29.7cm 다.
+- 타일을 A4(210×297) 가 아니라 **200×287mm** 로 잡아 페이지 중앙에 앉힌다 — 무여백 인쇄가 되는
+  프린터는 드물기 때문이다. 재단선까지 자르고 **맞대어** 붙인다(겹치지 말 것).
+- **뒷면에서** 테이프로 붙여라. 앞면의 흰 이음새는 차선 픽셀로 검출된다. 검은 이음새는 점선처럼
+  보일 뿐이고 슬라이딩 윈도우가 원래 그런 간격을 건너뛴다.
+- 재단선·라벨·스케일바는 **회색(V≈100)** 이라 흰색 검출(`white_v_min=185`)에 안 걸린다.
+
+> ⚠ **인쇄 배율이 곧 검증 정확도다.** 프린터가 "용지에 맞춤" 으로 축소하면 차선폭이 35cm 가
+> 아니게 되고, `--check` 는 캘리브가 아니라 **프린터를 측정**하게 된다 (체커보드 `square_mm`
+> 과 똑같은 함정). **배율 100% / 실제 크기** 로 인쇄하고, 마지막 쪽 **스케일바를 자로 재서
+> 100mm 인지 확인**하라. 그리고 **평평하게** 깔아라 — 우글거린 종이는 `H` 가 딛고 선 지면 평면
+> 가정을 깬다.
+
+검증: 이 타깃의 기하를 BEV 에 그대로 놓고 `validate` 를 돌리면 폭 오차 **0.00cm**, 평행성
+**0.00cm**, 수직성 **0.00cm** 로 통과한다 — 즉 실제 측정에서 나오는 오차는 전부 캘리브(또는
+인쇄·조립)의 것이다.
+
 ## calibrate — camera.yaml 생성
+
+**K·D 는 렌즈 고유**(재조준·트랙 변경에도 살아남는다), **H 는 마운트 자세**다. 그래서 카메라를
+움직였을 때 다시 필요한 건 **지면 사진 1장**뿐이다.
 
 ```bash
 cd offline
+
+# ⭐ 마운트만 움직였다 (거의 항상 이 경우) — K·D 재사용, H 만 다시 푼다
 ../.venv/bin/python calibrate.py \
-    --intrinsics shots/intr --ground shots/ground.png \
-    --square-mm 25.0 --lane-width-cm 35 --px-per-cm 4.0 \
+    --from-camera ../D-Racer-Kit/src/config/camera.yaml \
+    --ground calib/ground_01.png --square-mm 25.0 --lane-width-cm 35 \
     --out ../D-Racer-Kit/src/config/camera.yaml
 
-# 검증만 (직선 구간 프레임으로 수직성·평행성·폭 3가지 확인)
+# 렌즈/카메라 자체가 바뀌었다 — 체커보드부터
+../.venv/bin/python calibrate.py \
+    --intrinsics calib/intr --ground calib/ground_00.png \
+    --square-mm 25.0 --lane-width-cm 35 --px-per-cm 4.0 --runtime-size 320x240 \
+    --out ../D-Racer-Kit/src/config/camera.yaml
+
+# 검증 (직선 구간 프레임으로 폭·평행성·수직성 3가지)
 ../.venv/bin/python calibrate.py --check ../D-Racer-Kit/src/config/camera.yaml \
     --straight <frame>.png --lane-width-cm 35
 ```
 
-- `--intrinsics` = 체커보드 사진 폴더 → K/D. 코너 검출 5장 미만이면 종료한다.
+- `--from-camera` = 기존 `camera.yaml` 에서 **K·D + BEV 격자(`px_per_cm`·축 오프셋·런타임
+  해상도)** 를 물려받는다. 저장된 K·D 는 런타임 해상도(320x240) 기준이고 지면 사진은 고해상도
+  (960x720)로 찍으므로 **촬영 해상도로 정확히 rescale** 한다(오차 0px). 명시 인자가 있으면 그것이
+  이긴다. **검증: 같은 지면 사진에 대해 `--intrinsics` 경로와 같은 K·D·H 를 낸다.**
+- `--intrinsics` = 체커보드 사진 폴더 → K·D. 코너 검출 5장 미만이면 종료한다. **`--from-camera`
+  와 같이 쓸 수 없다** (K·D 출처는 하나여야 한다).
 - `--ground` = 지면에 눕힌 보드 사진 **1장** → 호모그래피 H (`solvePnP`). 카메라 높이 실측은
-  **불필요하다** — 산출된다.
-- **카메라 마운트를 움직이면 H 가 무효**가 된다. K/D 는 살아남으므로 `--ground` 만 다시 찍으면
-  된다.
+  **불필요하다** — 산출된다 (`--cam-height-cm` 을 주면 교차검증만 한다).
+- 촬영 절차(해상도 올리고 → 찍고 → **원복**)는 [Task command](../Task%20command.md) C-2.
+
+> ⚠ 현재 커밋된 `camera.yaml` 은 **지금의 `calib.py` 로 재현되지 않는다** (`H[2,2]` 가 0.539 인데
+> 현재 `build_model` 은 구조상 1.0 만 낸다 — 커밋 전 다른 버전으로 만들어진 파일이다). 실차
+> 성공 주행(0712)의 기준선이므로 **덮어쓰기 전에 백업하라.** 참고로 두 파일 모두 0712 재생에서
+> "재현 일치" 를 통과하고, 재생성본이 쌍검출 73% → 84% 로 오히려 높다.
 
 > ⚠ `--lateral-cm` 은 파싱만 되고 **어디서도 쓰이지 않는다** (dead flag). 축 오프셋은
 > `--axis-offset-cm`.

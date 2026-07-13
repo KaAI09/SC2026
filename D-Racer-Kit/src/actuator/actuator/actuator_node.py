@@ -7,7 +7,7 @@ import yaml
 
 from dracer_msgs.msg import Control
 from dracer_msgs.msg import Joystick
-from topst_utils.d3racer import D3Racer
+from topst_utils.d3racer import D3Racer, ServoCalib
 
 
 def get_default_vehicle_config_path():
@@ -52,7 +52,7 @@ class ActuatorNode(Node):
         self.control_timeout = float(self.get_parameter('control_timeout').value)
 
         self.command_hz = command_hz
-        self.steer_trim = self.load_steer_trim()
+        self.servo = self.load_servo_calib()
         # Timestamp of the most recent /control message (direct mode watchdog).
         self.last_control_time = None
 
@@ -61,6 +61,7 @@ class ActuatorNode(Node):
             pca9685_addr=pca9685_addr,
             steering_channel=steering_channel,
             throttle_channel=throttle_channel,
+            steering=self.servo,
         )
 
         self.get_logger().info(
@@ -69,7 +70,8 @@ class ActuatorNode(Node):
             f'  pca9685_addr=0x{pca9685_addr:02X}\n'
             f'  steering_channel={steering_channel}\n'
             f'  throttle_channel={throttle_channel}\n'
-            f'  steer_trim={self.steer_trim}\n'
+            f'  servo: center={self.servo.center_us}us span={self.servo.span_us}us '
+            f'range={self.servo.min_us}~{self.servo.max_us}us\n'
             f'  use_joystick_control={self.use_joystick_control}\n'
             f'  joystick_topic={joystick_topic}\n'
             f'  control_topic={control_topic}\n'
@@ -79,7 +81,8 @@ class ActuatorNode(Node):
         )
 
         self.throttle = 0.0
-        self.steering = self.steer_trim
+        # 0 IS straight now -- the trim lives in the servo's centre, not in the command.
+        self.steering = 0.0
         self.e_stop_active = False
 
         # Control inputs
@@ -107,7 +110,7 @@ class ActuatorNode(Node):
         if self.is_control_stale():
             # Command stream stalled in direct mode: hold steering neutral and
             # cut throttle until fresh /control messages resume.
-            self.apply_actuation(self.steer_trim, 0.0)
+            self.apply_actuation(0.0, 0.0)
             return
 
         self.apply_actuation(self.steering, self.throttle)
@@ -132,6 +135,23 @@ class ActuatorNode(Node):
             self.engage_e_stop()
             return
 
+        # Live trim: the joystick owns the Y/B buttons, the actuator owns the servo. The
+        # centre rides along on the message (same as accel_ratio) so a trim adjustment moves
+        # the wheels NOW -- a calibration you must restart to see is not a calibration.
+        # Applies in BOTH modes: the servo centre is a property of the car, not of who is
+        # driving it.
+        c = float(msg.steer_center_us)
+        if c > 0.0 and abs(c - self.servo.center_us) > 1e-6:
+            old_eff = self.servo.effective_span()
+            eff = self.d3_racer.set_steering_center(c)    # span_us 는 그대로, 실효만 재계산
+            msg_ = (f'servo centre -> {c:.0f}us  (±{eff * 25.0 / 300.0:.1f}도, 좌우 대칭)')
+            if eff < self.servo.span_us - 1e-6:
+                msg_ += (f'  ⚠ 중립이 치우쳐 실효 span 이 {self.servo.span_us:.0f} -> '
+                         f'{eff:.0f}us 로 줄었다')
+            elif eff > old_eff + 1e-6:
+                msg_ += f'  (실효 span 회복: {old_eff:.0f} -> {eff:.0f}us)'
+            self.get_logger().info(msg_)
+
         if self.e_stop_active or not self.use_joystick_control:
             return
 
@@ -142,24 +162,13 @@ class ActuatorNode(Node):
         if self.e_stop_active or self.use_joystick_control:
             return
 
-        # The autonomous command is symmetric about 0 (0 = straight). Add the servo
-        # trim so 0 maps to mechanical-straight, matching manual mode (which sends
-        # axis + trim); otherwise every command sits STEER_TRIM off center. Clamp.
-        raw = float(msg.steering) + self.steer_trim
-        self.steering = max(-1.0, min(1.0, raw))
-        # The command and the trim share ONE [-1, 1] servo budget, so a controller whose
-        # steer_max exceeds 1 - |trim| loses authority on one side only, and loses it
-        # silently: the servo just stops moving while the controller keeps asking for more.
-        # That reads as a one-sided understeer and sends you hunting through the gains.
-        # control_node's steer_max is set to 1 - |STEER_TRIM| for exactly this reason; if
-        # that ever drifts, say so rather than clipping in the dark.
-        if abs(raw - self.steering) > 1e-6:
-            self.get_logger().warning(
-                f'steering saturated: {raw:+.3f} -> {self.steering:+.3f} '
-                f'(cmd {msg.steering:+.3f} + trim {self.steer_trim:+.3f}). '
-                f'steer_max 를 {1.0 - abs(self.steer_trim):.2f} 이하로 낮춰라 — '
-                '지금 한쪽 조향 권한만 깎이고 있다.',
-                throttle_duration_sec=2.0)
+        # 0 = straight, full stop. The servo's own centre (ServoCalib.center_us) carries the
+        # mechanical trim now, so nothing is added here and the command uses the whole [-1, 1].
+        # This used to be `clamp(u + STEER_TRIM, -1, 1)`: the command and the trim shared ONE
+        # servo budget, which is why steer_max had to be 1 - |trim| = 0.7. And even that was
+        # too much -- the wheels hit their +-25 deg stop at u = +-0.6, so the last 14% of the
+        # command range moved nothing. The controller kept asking; the wheels had stopped.
+        self.steering = max(-1.0, min(1.0, float(msg.steering)))
         self.throttle = float(msg.throttle)
         self.last_control_time = self.get_clock().now()
 
@@ -172,25 +181,53 @@ class ActuatorNode(Node):
         self.apply_actuation(self.steering, 0.0)
         self.get_logger().warning('E-STOP engaged. Ignoring incoming throttle commands.')
 
-    def load_steer_trim(self):
-        if not os.path.exists(self.vehicle_config_file):
-            return 0.0
+    def load_servo_calib(self):
+        """Measured servo calibration (scripts/servo_sweep.py) -> ServoCalib.
 
-        try:
-            with open(self.vehicle_config_file, 'r', encoding='utf-8') as config_stream:
-                config_data = yaml.safe_load(config_stream) or {}
-        except Exception as exc:
+        These are MEASUREMENTS, not conventions. The dataclass defaults (1500/500/1000/2000)
+        are the RC-servo convention and this car's servo does not match them: its real range
+        is 1300~1900us, so the old settings drove p=+-1.0 straight past the mechanical stops.
+        If the config is missing the keys we fall back to those defaults -- but say so, loudly,
+        because "the servo defaults" is exactly the assumption that was wrong.
+        """
+        cfg = {}
+        if os.path.exists(self.vehicle_config_file):
+            try:
+                with open(self.vehicle_config_file, 'r', encoding='utf-8') as f:
+                    cfg = yaml.safe_load(f) or {}
+            except Exception as exc:
+                self.get_logger().warning(
+                    f'Failed to read vehicle config file {self.vehicle_config_file}: {exc}')
+
+        d = ServoCalib()          # convention defaults, only as a last resort
+        if 'SERVO_CENTER_US' not in cfg:
             self.get_logger().warning(
-                f'Failed to read vehicle config file {self.vehicle_config_file}: {exc}'
-            )
-            return 0.0
+                f'{self.vehicle_config_file} 에 SERVO_CENTER_US 가 없다 — RC 관례 기본값'
+                f'({d.center_us}/{d.span_us}/{d.min_us}~{d.max_us}us)으로 돈다. 그 값은 이 차의 '
+                '서보를 잰 것이 아니다: scripts/servo_sweep.py 로 실측하라. '
+                '(옛 STEER_TRIM 은 더 이상 쓰이지 않는다 — 트림은 서보 중립으로 옮겼다.)')
 
-        return float(config_data.get('STEER_TRIM', 0.0))
+        servo = ServoCalib(
+            center_us=float(cfg.get('SERVO_CENTER_US', d.center_us)),
+            span_us=float(cfg.get('SERVO_SPAN_US', d.span_us)),
+            min_us=float(cfg.get('SERVO_MIN_US', d.min_us)),
+            max_us=float(cfg.get('SERVO_MAX_US', d.max_us)),
+        )
+        # span 은 실측(조향이 일어나는 반경)이고 min/max 는 서보 하드 clip 이다. 중립이 치우쳐
+        # 좌우 여유가 span 보다 좁아지면 effective_span() 이 알아서 좁은 쪽에 맞춘다 — 여기서
+        # 미리 줄이지 않는다(중립을 되돌리면 복구돼야 한다). 다만 조용히 넘어가지는 않는다.
+        eff = servo.effective_span()
+        if eff < servo.span_us - 1e-6:
+            self.get_logger().warning(
+                f'중립({servo.center_us:.0f})이 치우쳐 실효 span 이 {servo.span_us:.0f} -> '
+                f'{eff:.0f}us 로 줄었다 (하드 clip {servo.min_us:.0f}~{servo.max_us:.0f}). '
+                f'조향각이 ±{eff * 25.0 / 300.0:.1f}도로 좁아진다 — 좌우는 대칭이다.')
+        return servo
 
     def destroy_node(self):
         try:
             if hasattr(self, 'd3_racer') and self.d3_racer is not None:
-                self.apply_actuation(self.steer_trim, 0.0)
+                self.apply_actuation(0.0, 0.0)
         finally:
             super().destroy_node()
 

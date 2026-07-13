@@ -15,22 +15,28 @@ CLI/리포트만 담당한다 (온라인 노드와 같은 코드 = 오프라인/
 
 촬영: D3-G에서 `scripts/capture_camera_calib.py` (해상도 변경 절차는 그 파일 참조).
 
-  # 1) K·D — 보드를 카메라 정면으로 들고 여러 각도/거리 10~20장.
-  #    렌즈 고유 -> 트랙이 바뀌어도, 카메라를 재조준해도 영구 재사용.
-  ../.venv/bin/python calibrate.py --intrinsics shots/intr --square-mm 24.8
+  # ⭐ 마운트만 움직였다 (거의 항상 이 경우다) — 지면 사진 1장으로 H 만 다시 푼다.
+  #    K·D 는 렌즈 고유라 기존 camera.yaml 에서 그대로 재사용한다. 체커보드는 안 찍는다.
+  ../.venv/bin/python calibrate.py \
+      --from-camera ../D-Racer-Kit/src/config/camera.yaml \
+      --ground calib/ground_01.png --square-mm 25.0 --lane-width-cm 35 \
+      --out ../D-Racer-Kit/src/config/camera.yaml
+
+  # 1) K·D — 렌즈/카메라 자체가 바뀌었을 때만. 보드를 정면으로 들고 여러 각도/거리 10~20장.
+  ../.venv/bin/python calibrate.py --intrinsics calib/intr --square-mm 24.8
 
   # 2) H — 지면에 눕힌 보드 1장. 장착 자세 -> 카메라를 건드리면 이것만 다시 찍는다.
   #    거리를 잴 필요가 없다: 보드가 지면 평면을 정의하므로 solvePnP 가 카메라 위치를
   #    풀어주고, 카메라~보드 거리는 산출된다(손으로는 광학중심의 지면 투영점도, 첫
   #    '내부 코너'도 정확히 짚기 어렵다 — 실측 두 해석 모두 Cy≠0 으로 틀렸었다).
   #    보드는 화면에 다 들어오게, 좌우 중앙에, 노면에 평평하게만 두면 된다.
-  ../.venv/bin/python calibrate.py --intrinsics shots/intr --ground shots/ground.png \
-      --square-mm 25.0 --lane-width-cm 35 --cam-height-cm 23 \
-      --out ../D-Racer-Kit/src/config/camera.yaml
+  ../.venv/bin/python calibrate.py --intrinsics calib/intr --ground calib/ground_00.png \
+      --square-mm 25.0 --lane-width-cm 35 --cam-height-cm 23 --px-per-cm 4.0 \
+      --runtime-size 320x240 --out ../D-Racer-Kit/src/config/camera.yaml
 
   # 3) 검증 — 직선 구간 프레임에서 BEV가 실제로 metric 한지 (카메라를 만진 뒤엔 항상)
   ../.venv/bin/python calibrate.py --check ../D-Racer-Kit/src/config/camera.yaml \
-      --straight shots/straight.png --lane-width-cm 60
+      --straight calib/straight.png --lane-width-cm 35
 
 `--square-mm`는 **인쇄물을 자로 실측한 값**을 넣어야 한다. 프린터가 자동 축소하면
 공칭 25mm가 아니게 되고, 그 오차가 BEV의 cm 전체를 그대로 틀어지게 한다.
@@ -98,6 +104,52 @@ def do_intrinsics(a):
     return K, D, rms, size
 
 
+def reuse_intrinsics(a):
+    """기존 `camera.yaml` 의 K·D 를 재사용한다 — 마운트만 움직였을 때의 경로.
+
+    K·D 는 **렌즈** 고유다. 카메라를 재조준해도, 트랙이 바뀌어도 유효하다. 마운트를 움직여
+    무효가 되는 건 **H(자세)** 하나뿐이고, 그건 지면 사진 1장이면 다시 풀린다. 체커보드
+    20장을 다시 찍을 이유가 없다 — 그리고 그 폴더가 없어도 재캘리브가 된다는 뜻이다.
+
+    저장된 yaml 은 런타임 해상도(320x240)로 rescale 된 상태이고, 지면 사진은 코너가 잡히는
+    고해상도(960x720)로 찍는다. K·D 를 촬영 해상도로 되돌리는 rescale 은 **정확하다**
+    (순수 리스케일, 오차 0px — `CameraModel.rescale` 참조).
+
+    BEV 격자(`px_per_cm`·축 오프셋)와 런타임 해상도도 물려받는다. 고친 것은 마운트이지
+    BEV 설계가 아니다 — 명시적으로 덮어쓰면 그 값이 이긴다.
+    """
+    m = CameraModel.load(os.path.expanduser(a.from_camera))
+    # 저장된 해상도 = 런타임 해상도. 아래에서 m 을 촬영 해상도로 rescale 하므로, 그 전에
+    # 붙잡아 둔다 (`m.image_size` 를 나중에 읽으면 촬영 해상도가 나오고, 그러면 960x720
+    # 짜리 camera.yaml 을 저장하게 된다 — perception 이 match() 로 살려내긴 하지만
+    # 런타임 해상도를 잃는 건 그냥 버그다).
+    stored_size = tuple(m.image_size)
+    img = cv2.imread(a.ground)
+    if img is None:
+        sys.exit(f"지면 사진을 못 읽었다: {a.ground}")
+    shot = (img.shape[1], img.shape[0])
+
+    print(f"\n[K·D] 재사용: {a.from_camera}  (렌즈 고유 — 마운트를 움직여도 유효하다)")
+    print(f"  저장 해상도 : {m.image_size[0]}x{m.image_size[1]}   "
+          f"RMS {m.rms_px:.3f} px   square {m.square_mm:.1f} mm")
+    if not np.isnan(m.square_mm) and abs(m.square_mm - a.square_mm) > 1e-6:
+        print(f"  ⚠ square_mm 이 저장값({m.square_mm})과 다르다({a.square_mm}) — "
+              f"다른 보드를 쓴다면 맞다. 같은 보드면 오타다.")
+    if tuple(m.image_size) != shot:
+        m = m.match(shot)
+        print(f"  지면 사진   : {shot[0]}x{shot[1]} → K·D 를 그 해상도로 정확 rescale "
+              f"(오차 0px)")
+
+    # BEV 격자는 물려받는다 (명시 인자가 있으면 그것이 이긴다).
+    if a.px_per_cm is None:
+        a.px_per_cm = m.px_per_cm
+    if a.axis_offset_cm is None:
+        a.axis_offset_cm = m.lateral_offset_cm
+    if a.runtime_size is None:
+        a.runtime_size = stored_size
+    return m.K, m.D, m.rms_px, shot
+
+
 def do_ground(a, K, D, size):
     img = cv2.imread(a.ground)
     if img is None:
@@ -108,7 +160,8 @@ def do_ground(a, K, D, size):
 
     # 보드가 지면 평면을 정의하므로 solvePnP 가 카메라 위치를 준다 -> near_cm 실측 불필요.
     # (손으로 재면 광학중심의 지면 투영점도, 첫 '내부 코너'도 정확히 짚기 어렵다)
-    Hg, cam_h, near_cm, lat_cm, grms = ground_pose(img, K, D, a.pattern, a.square_mm)
+    Hg, cam_h, near_cm, lat_cm, grms = ground_pose(img, K, D, a.pattern, a.square_mm,
+                                                   board_offset_cm=a.board_offset_cm)
     print(f"\n[H] 지면 보드 → 호모그래피  (near_cm 은 실측이 아니라 산출)")
     print(f"  카메라 높이 : {cam_h:.1f} cm" +
           (f"   (실측 {a.cam_height_cm} cm, 오차 {abs(cam_h - a.cam_height_cm):.1f} cm"
@@ -155,6 +208,14 @@ def do_check(a):
     if img is None:
         sys.exit(f"직선 구간 프레임을 못 읽었다: {a.straight}")
 
+    # 프레임 크기에 모델을 맞춘다 — perception 이 `CameraModel.match` 로 하는 것과 같다.
+    # 없으면 검증 프레임이 런타임 해상도가 아닐 때 `to_bev` 가 예외를 던진다. 검증 도구가
+    # 사진 해상도 때문에 죽는 것은 검증이 아니라 잡일이다 (rescale 은 정확하다).
+    h, w = img.shape[:2]
+    if (w, h) != tuple(m.image_size):
+        print(f"  프레임 {w}x{h} != 모델 {m.image_size[0]}x{m.image_size[1]} → 정확 rescale")
+        m = m.match((w, h))
+
     # 인지 코어와 '같은' 검출로 확인해야 의미가 있다
     from dracer_core.perception_core import Cfg, detect, sliding_window_lanes
     c = Cfg()
@@ -186,7 +247,10 @@ def do_check(a):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--intrinsics', help='체커보드 사진 폴더 (K·D)')
+    ap.add_argument('--intrinsics', help='체커보드 사진 폴더 (K·D). 렌즈가 바뀌었을 때만 필요')
+    ap.add_argument('--from-camera', help='기존 camera.yaml 에서 K·D 를 재사용 '
+                                          '(--intrinsics 대신). **마운트만 움직였을 때 쓰는 '
+                                          '경로** — 지면 사진 1장으로 H 만 다시 푼다')
     ap.add_argument('--ground', help='지면에 눕힌 보드 사진 1장 (H)')
     ap.add_argument('--check', help='검증할 camera.yaml')
     ap.add_argument('--straight', help='--check 용 직선 구간 프레임')
@@ -197,11 +261,17 @@ def main():
                     help='체커 한 칸 실측 mm (인쇄물을 자로 잰 값!)')
     ap.add_argument('--cam-height-cm', type=float,
                     help='카메라 높이 실측 (cm). 주면 복원값과 교차검증한다 (필수 아님)')
-    ap.add_argument('--runtime-size', type=_pattern, default=(320, 160),
-                    help='런타임(인지) 해상도 WxH — 여기로 정확히 rescale 해서 저장')
-    ap.add_argument('--axis-offset-cm', type=float, default=0.0,
+    ap.add_argument('--board-offset-cm', type=float, default=0.0,
+                    help='체커보드 **하면**이 지면에서 뜬 높이 (cm). 보드를 지면에 직접 놓았으면 0.\n                         폼보드에 붙였거나 뭔가 위에 올렸다면 그 두께를 반드시 넣어라 — solvePnP 는\n                         **보드 평면**을 풀기 때문에, 이 값이 틀리면 BEV 전체가 조용히 틀어진다\n                         (숫자는 멀쩡해 보이고 ground rms 는 오히려 좋게 나온다).')
+    # 아래 셋은 default=None 이다: --from-camera 면 기존 camera.yaml 에서 물려받고,
+    # --intrinsics 면 아래 기본값으로 떨어진다. 명시하면 언제나 그것이 이긴다.
+    ap.add_argument('--runtime-size', type=_pattern, default=None,
+                    help='런타임(인지) 해상도 WxH — 여기로 정확히 rescale 해서 저장 '
+                         '(기본: --from-camera 면 저장값, 아니면 320x160)')
+    ap.add_argument('--axis-offset-cm', type=float, default=None,
                     help='카메라가 차량 중심에 안 붙었을 때의 축 보정 (cm, + = 축을 오른쪽으로)')
-    ap.add_argument('--px-per-cm', type=float, default=2.0, help='BEV 스케일 (기본 1px=5mm)')
+    ap.add_argument('--px-per-cm', type=float, default=None,
+                    help='BEV 스케일 (기본: --from-camera 면 저장값, 아니면 2.0 = 1px 5mm)')
     ap.add_argument('--x-half', type=float, help='BEV 횡방향 반폭 cm (기본: 가시범위 자동)')
     ap.add_argument('--y-far', type=float, help='BEV 최대 전방 cm (기본: 가시범위 자동)')
     ap.add_argument('--lane-width-cm', type=float, help='트랙 차선폭 (검증/리포트용)')
@@ -212,9 +282,28 @@ def main():
             sys.exit('--check 에는 --straight 와 --lane-width-cm 이 필요하다')
         sys.exit(do_check(a))
 
-    if not a.intrinsics:
-        sys.exit('--intrinsics (K·D) 또는 --check 중 하나가 필요하다')
-    K, D, a.rms, size = do_intrinsics(a)
+    if a.intrinsics and a.from_camera:
+        sys.exit('--intrinsics 와 --from-camera 는 같이 못 쓴다 — K·D 를 어디서 가져올지 '
+                 '하나만 골라라 (렌즈가 바뀌었으면 --intrinsics, 마운트만 움직였으면 '
+                 '--from-camera)')
+    if a.from_camera:
+        # 마운트만 움직인 경우: K·D 재사용, 지면 사진 1장으로 H 만 다시 푼다.
+        if not a.ground:
+            sys.exit('--from-camera 는 --ground 와 함께 쓴다 (H 만 다시 푸는 경로다)')
+        K, D, a.rms, size = reuse_intrinsics(a)
+    elif a.intrinsics:
+        K, D, a.rms, size = do_intrinsics(a)
+    else:
+        sys.exit('--intrinsics (렌즈 새로) / --from-camera (마운트만) / --check 중 '
+                 '하나가 필요하다')
+
+    # --intrinsics 경로의 기본값 (--from-camera 는 reuse_intrinsics 가 이미 채웠다)
+    if a.px_per_cm is None:
+        a.px_per_cm = 2.0
+    if a.axis_offset_cm is None:
+        a.axis_offset_cm = 0.0
+    if a.runtime_size is None:
+        a.runtime_size = (320, 160)
 
     if not a.ground:
         print("\n--ground 가 없어 K·D 까지만 계산했다. camera.yaml 을 쓰려면 지면 사진이 필요하다.")
@@ -224,7 +313,8 @@ def main():
     if a.out:
         m.save(a.out)
         print(f"\n저장: {a.out}")
-        print("  → 트랙 무관. 카메라를 재조준하면 --ground 만 다시 돌리면 된다.")
+        print("  → 트랙 무관. 마운트를 다시 움직이면 지면 사진 1장 + `--from-camera` 만 하면 된다.")
+        print("  → 저장 직후 `--check` 로 검증하라 (직선 구간 프레임 1장).")
 
 
 if __name__ == '__main__':

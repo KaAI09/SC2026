@@ -211,10 +211,10 @@ class Controller:
             # Perception is telling us its own EMA is not to be trusted: the raw measurement
             # has disagreed past `outlier_jump` and has not yet been believed (see
             # perception_core._Stabilizer). We are steering on a value that is stale and --
-            # after a corridor flip -- WRONG-SIGNED, for up to `outlier_relatch` frames.
+            # after a corridor flip -- WRONG-SIGNED, for up to `outlier_relatch_s`.
             #
             # That is exactly the 145617 failure: 1.47s of inverted steering while perception
-            # was reporting the truth the whole time. `outlier_relatch` shortened the window
+            # was reporting the truth the whole time. `outlier_relatch_s` shortened the window
             # to 0.17s; this closes it. Perception knew. Nobody asked.
             #
             # Steering needs no extra hold: a frozen EMA is a constant `e`, so `de` decays to

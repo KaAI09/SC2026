@@ -24,8 +24,8 @@ Imported by BOTH the online perception node and the offline tools. Depends only 
 Usage:
     from dracer_core.perception_core import LanePipeline, Cfg, cfg_from_profile
     pipe = LanePipeline(cfg_from_profile(profile['perception']), cam)   # cam: REQUIRED
-    state = pipe.process(frame_bgr)                 # dict (center_error, ...)
-    state, dbg = pipe.process(frame_bgr, debug=True)   # dbg -> render_panels()
+    state = pipe.process(frame_bgr, dt_s)                 # dict (center_error, ...)
+    state, dbg = pipe.process(frame_bgr, dt_s, debug=True)   # dbg -> render_panels()
 
 `process()` returns ONLY the lane state. Rendering is never on its hot path: build the
 debug image with `render_panels(frame, dbg, cfg)`, and only when something is watching.
@@ -166,25 +166,33 @@ class Cfg:
     # E: tracker (ego L/R persistence + width coast)
     lane_width_default: float = 0.5
     jump_max: float = 120.0
-    lost_reset: int = 8
+    lost_reset_s: float = 0.26      # drop the tracked identity after this long with no lane
+                                    # (= 8 frames @30Hz, the rate it was tuned at)
     track_width_tol: float = 0.25   # Tracker: accept a width MEASUREMENT only within this
                                     # fraction of lane_width_cm. <= 0 accepts anything.
                                     # Deliberately NOT the same knob as `pair_width_tol`
                                     # (which gates lane_centers' pairing): turning one off
                                     # must not turn the other off.
     # scalar output stabilizer (smooths center_error + names the failsafe state)
-    ema_alpha: float = 0.4
+    #
+    # TIME CONSTANTS, not per-frame weights. An EMA weight of 0.4 "per frame" makes the
+    # filter's real memory a function of the day's FPS: the same 0.4 smooths over 0.16s at
+    # 30Hz and 0.47s at 10Hz. Perception went 10.7 -> 30Hz and every one of these silently
+    # became 3x shorter. `tau` is the physical memory; the per-frame weight is DERIVED from
+    # it and the measured dt (`_ema_alpha`), so the filter behaves the same at any rate.
+    ema_tau_s: float = 0.065     # = alpha 0.4 @30Hz. Shared by the lane-coeff EMA, the
+                                 # corridor-width EMA and the center_error EMA -- all three
+                                 # ran at 0.4 before, so one tau reproduces all three.
     outlier_jump: float = 0.5
-    outlier_relatch: int = 5     # consecutive rejections -> believe the new value, re-seed.
-                                 # Without it `outlier_jump` latches forever (see _Stabilizer).
+    outlier_relatch_s: float = 0.16  # rejections held this long -> believe the new value,
+                                 # re-seed. Without it `outlier_jump` latches forever (see
+                                 # _Stabilizer). It bounds how long the car steers on a stale
+                                 # (and, after a corridor flip, WRONG-SIGNED) value -- which
+                                 # is a duration, so a duration is what it must be expressed
+                                 # as. Was a 5-FRAME count that meant 0.17s @30Hz and 0.25s
+                                 # @20Hz -- longest exactly when perception was worst.
                                  #
-                                 # This is a FRAME count, so it is really a time window that
-                                 # stretches when perception slows: 0.17s @30Hz, 0.25s @20Hz.
-                                 # It bounds how long the car can steer on a stale (and, after
-                                 # a corridor flip, WRONG-SIGNED) value, so it must be sized
-                                 # for the SLOWEST rate we would still drive at, not the fastest.
-                                 #
-                                 # 5, measured on the 0711 raw (relatch 6 -> 5 -> 4):
+                                 # 5 frames @30Hz, measured on the 0711 raw (relatch 6->5->4):
                                  #   145617  OUTLIER 3.5% -> 2.8%,  max EMA freeze 5 -> 4 fr,
                                  #           |ema - truth| mean .063 -> .058, p95 .145 -> .137
                                  #   145515  identical (its bursts top out at 3 fr, below both)
@@ -192,9 +200,10 @@ class Cfg:
                                  #   3-frame transients -- believing a disagreement that was
                                  #   about to resolve itself. That is the spike defence going.
     use_median: bool = False
-    median_window: int = 5
+    median_window: int = 5       # SAMPLES, not time. A median needs a sample count; leaving
+                                 # it in frames is honest (and `use_median` is off).
     conf_low: float = 0.25
-    lost_stop_frames: int = 8
+    lost_stop_s: float = 0.26    # no usable measurement for this long -> LOST (= 8fr @30Hz)
 
     # ==================================================================
     # METRIC (BEV) parameters — cm, used ONLY when a CameraModel is given.
@@ -299,6 +308,28 @@ def cfg_to_px(cfg, cam):
         # convergence to fake it), so express the threshold as a real distance.
         heading_frac=(cfg.heading_cm * s) / bev_w,
     )
+
+
+def _ema_alpha(dt_s, tau_s):
+    """Per-frame EMA weight from a TIME constant and the measured frame interval.
+
+    `alpha = 1 - exp(-dt/tau)` is the discrete sampling of a first-order lag with memory
+    `tau`. The point is that the filter's behaviour stops depending on the frame rate:
+
+      dt = 0      -> 0    no time passed, so the filter does not move (a re-seed, not a blend)
+      dt = tau    -> 0.63 one time constant
+      dt >> tau   -> 1    the stored value is older than the filter's memory. Take the
+                          measurement. After a long dropout that is the ONLY honest answer --
+                          blending against a value from a second ago is worse than forgetting.
+
+    A weight of 0.4 @30Hz is tau = -(1/30) / ln(0.6) = 0.065s, which is where the default
+    comes from: the same filter the successful drive ran, now expressed in seconds.
+    """
+    if tau_s <= 0.0:
+        return 1.0                       # no smoothing: always take the measurement
+    if dt_s <= 0.0:
+        return 0.0                       # no time passed: hold
+    return 1.0 - math.exp(-dt_s / tau_s)
 
 
 LABEL_COLORS = {  # BGR
@@ -818,7 +849,7 @@ class Tracker:
         self.h, self.w = h, w
         self.lane_w_px = float(lane_w_px)     # BEV lane width; the physical width gate
         self.L = self.R = self.width = None
-        self.lost = 0
+        self.lost_s = 0.0                     # TIME with no lane, not a frame count
         self.turn = 1
 
     def _measure_width(self, mL, mR):
@@ -880,7 +911,7 @@ class Tracker:
         (35cm / 29cm half-width = 1.2 normalised), and the steering command inverts.
 
         Session 145617 frame 419 did exactly that: left-coast +0.49 -> right-coast -0.38.
-        `outlier_relatch` bounds how long the car acts on the inverted value (0.17s); it does
+        `outlier_relatch_s` bounds how long the car acts on the inverted value (0.16s); it does
         not stop the flip. This does. The image centre now decides left from right in exactly
         one place -- `_seed`, when there is no track to carry.
         """
@@ -933,13 +964,19 @@ class Tracker:
         return (max(left, key=lambda x: x['x_bottom']) if left else None,
                 min(right, key=lambda x: x['x_bottom']) if right else None)
 
-    def _ema(self, prev, meas):
+    def _ema(self, prev, meas, dt_s):
         if prev is None:
             return meas
-        a = self.c.ema_alpha
+        a = _ema_alpha(dt_s, self.c.ema_tau_s)
         return tuple(a * m + (1 - a) * p for m, p in zip(meas, prev))
 
-    def adopt(self, a, b):
+    def _blend_width(self, wdt, dt_s):
+        """The corridor-width EMA. Was a hard-coded `0.6*old + 0.4*new` -- not even a config
+        field, so it could not be tuned and it silently changed memory with the frame rate."""
+        a = _ema_alpha(dt_s, self.c.ema_tau_s)
+        self.width = wdt if self.width is None else (1 - a) * self.width + a * wdt
+
+    def adopt(self, a, b, dt_s):
         """Re-seed left/right from a corridor that `lane_centers` physically validated.
 
         THE MISSING FEEDBACK LOOP. `Tracker.update` and `lane_centers` ran as strangers: the
@@ -964,10 +1001,10 @@ class Tracker:
         has actually PROVEN something, not merely because a lane wandered across a column.
         """
         self.L, self.R = a['coeffs'], b['coeffs']
-        self.lost = 0
+        self.lost_s = 0.0
         wdt = self._measure_width(a, b)
         if wdt is not None and self._width_ok(wdt):
-            self.width = wdt if self.width is None else 0.6 * self.width + 0.4 * wdt
+            self._blend_width(wdt, dt_s)
 
     def reseat_coast(self, near, dx, width):
         """`coast_side` found the mask under the mirror of our phantom: `near` is on the
@@ -988,7 +1025,7 @@ class Tracker:
             self.R = near['coeffs']
             self.L = _shift(self.R, -width)
 
-    def update(self, instances):
+    def update(self, instances, dt_s):
         cands = [x for x in instances if x['coeffs'] is not None]
         # Tracking -> identity. Not tracking -> geometry. Never geometry OVER identity.
         if self.L is None and self.R is None:
@@ -1002,23 +1039,23 @@ class Tracker:
         width = (self.width if (self.width is not None and self.width > 0)
                  else self.c.lane_width_default * self.w)
         if gL and gR:
-            self.L = self._ema(self.L, mL['coeffs'])
-            self.R = self._ema(self.R, mR['coeffs'])
+            self.L = self._ema(self.L, mL['coeffs'], dt_s)
+            self.R = self._ema(self.R, mR['coeffs'], dt_s)
             wdt = self._measure_width(mL, mR)
             if wdt is not None and self._width_ok(wdt):
-                self.width = wdt if self.width is None else 0.6 * self.width + 0.4 * wdt
-            self.lost = 0
+                self._blend_width(wdt, dt_s)
+            self.lost_s = 0.0
         elif gL:
-            self.L = self._ema(self.L, mL['coeffs'])
+            self.L = self._ema(self.L, mL['coeffs'], dt_s)
             self.R = _shift(self.L, width)
-            self.lost = 0
+            self.lost_s = 0.0
         elif gR:
-            self.R = self._ema(self.R, mR['coeffs'])
+            self.R = self._ema(self.R, mR['coeffs'], dt_s)
             self.L = _shift(self.R, -width)
-            self.lost = 0
+            self.lost_s = 0.0
         else:
-            self.lost += 1
-        if self.lost >= self.c.lost_reset:
+            self.lost_s += dt_s
+        if self.lost_s >= self.c.lost_reset_s:
             self.L = self.R = self.width = None
         if self.L is not None and self.R is not None:
             ca = (self.L[0] + self.R[0]) / 2.0
@@ -1032,40 +1069,44 @@ class Tracker:
 class _Stabilizer:
     """center_error EMA + failsafe state name.
 
-    TWO counters, not one. `missing` counts frames with NO usable measurement (lost
-    detection / low confidence); `rejects` counts consecutive OUTLIER rejections of a
+    TWO accumulators, not one. `missing_s` accrues time with NO usable measurement (lost
+    detection / low confidence); `rejects_s` accrues time spent rejecting an OUTLIER -- a
     measurement that DOES exist but disagrees with the EMA. They answer different
-    questions and feed different thresholds (`lost_stop_frames` vs `outlier_relatch`),
+    questions and feed different thresholds (`lost_stop_s` vs `outlier_relatch_s`),
     and sharing one variable silently mixed them:
 
       5 frames of no detection (lost=5) -> detection returns with a legitimately
-      different value -> lost=6 >= outlier_relatch -> INSTANT relatch.
+      different value -> lost=6 >= relatch threshold -> INSTANT relatch.
 
     That is the one-frame spike defence deleting itself exactly when it is needed --
     the first frame back after a dropout is the least trustworthy one there is. The
-    relatch rule is "the new value held for `outlier_relatch` frames STRAIGHT", and
-    only a counter that counts rejections can say that.
+    relatch rule is "the new value held for `outlier_relatch_s` STRAIGHT", and only an
+    accumulator that counts rejections can say that.
+
+    Both are SECONDS. As frame counts they were thresholds whose real duration moved with
+    the day's FPS -- and the relatch bound is a promise about how long the car may steer on
+    a possibly wrong-signed value. That promise has to be in seconds to mean anything.
     """
 
     def __init__(self, c):
         self.c = c
         self.ema = None
-        self.missing = 0     # consecutive frames with no usable measurement
-        self.rejects = 0     # consecutive OUTLIER rejections of a usable measurement
+        self.missing_s = 0.0   # consecutive TIME with no usable measurement
+        self.rejects_s = 0.0   # consecutive TIME rejecting a usable-but-disagreeing value
         self.hist = deque(maxlen=max(1, c.median_window))
 
-    def update(self, center_error, conf):
+    def update(self, center_error, conf, dt_s):
         c = self.c
         if center_error is None or conf < c.conf_low:
-            self.missing += 1
+            self.missing_s += dt_s
             # A rejection streak is a claim about DISAGREEING measurements. No
             # measurement is not a disagreement -- it breaks the streak.
-            self.rejects = 0
-            return self.ema, ('LOST' if self.missing >= c.lost_stop_frames else 'HOLD')
-        self.missing = 0
+            self.rejects_s = 0.0
+            return self.ema, ('LOST' if self.missing_s >= c.lost_stop_s else 'HOLD')
+        self.missing_s = 0.0
         if self.ema is not None and abs(center_error - self.ema) > c.outlier_jump:
-            self.rejects += 1
-            if self.rejects < c.outlier_relatch:
+            self.rejects_s += dt_s
+            if self.rejects_s < c.outlier_relatch_s:
                 return self.ema, 'OUTLIER'
             # The rejection had no way out. `outlier_jump` exists to swallow a ONE-frame
             # spike, but the test is against a frozen EMA, so a SUSTAINED move past it
@@ -1081,15 +1122,16 @@ class _Stabilizer:
             # ignores `state`, so the car steered on the WRONG SIGN for 1.47s.
             #
             # So: reject a spike, but believe a fact. If the new value holds for
-            # `outlier_relatch` frames straight it is not noise -- re-seed onto it.
+            # `outlier_relatch_s` straight it is not noise -- re-seed onto it.
             self.hist.clear()
             self.ema = None
-        self.rejects = 0
+        self.rejects_s = 0.0
         val = center_error
         if c.use_median:
             self.hist.append(center_error)
             val = float(np.median(self.hist))
-        self.ema = val if self.ema is None else c.ema_alpha * val + (1 - c.ema_alpha) * self.ema
+        a = _ema_alpha(dt_s, c.ema_tau_s)
+        self.ema = val if self.ema is None else a * val + (1 - a) * self.ema
         return self.ema, ('LOW_CONF' if conf < c.conf_low * 1.6 else 'OK')
 
 
@@ -1132,9 +1174,65 @@ class LanePipeline:
         self._in_branch = False               # latch: a route is chosen ONCE per branch
         self._rng = random.Random(self.c.branch_seed)   # seeded: a replay must reproduce
 
-    def process(self, bgr, debug=False):
+    def reconfigure(self, cfg):
+        """Swap the cm config and KEEP the cross-frame state (tracker identity, width, EMAs).
+
+        `ros2 param set` used to rebuild the whole pipeline, which threw away everything the
+        Tracker had learned -- left/right identity, the width EMA, the centre EMA -- so tuning
+        one gain cost a perception discontinuity, and the README told you to stop the car
+        before touching a parameter. That is backwards. The state is a MEASUREMENT (where the
+        lanes are, how wide this corridor is); the config is a JUDGEMENT (what counts as a
+        lane). Changing the judgement does not invalidate the measurement.
+
+        Everything reads `self.c` per frame and so follows automatically -- EXCEPT two values
+        frozen at construction, which is exactly why a rebuild looked like the only option:
+
+          - `_Stabilizer.hist` bakes `median_window` into a deque maxlen.
+          - `Tracker.lane_w_px` bakes `lane_width_cm` into BEV px.
+
+        A wildly different `lane_width_cm` can leave the tracked `width` outside the new
+        `_width_ok` band. That is safe by construction: the measurement is rejected and the
+        tracker falls back to `lane_width_default` (see `_width_ok`).
+
+        BEV GEOMETRY is the one thing this cannot absorb -- if `cam` changes, the tracked
+        pixels mean a different place and the state IS void. That path still rebuilds
+        (`perception_node._match_camera`), and it must.
+        """
+        seed_changed = cfg.branch_seed != self.cfg.branch_seed
+        self.cfg = cfg
+        self.c = cfg_to_px(cfg, self.cam)
+
+        self.stab.c = self.c
+        mw = max(1, self.c.median_window)
+        if self.stab.hist.maxlen != mw:
+            self.stab.hist = deque(self.stab.hist, maxlen=mw)   # carry the samples over
+
+        if self.trk is not None:
+            self.trk.c = self.c
+            self.trk.lane_w_px = float(self.cam.lane_width_px(cfg.lane_width_cm))
+
+        # Reseed ONLY when the seed itself changed. Restarting the draw sequence on every
+        # unrelated `param set` would make a branch choice depend on when you last tuned.
+        if seed_changed:
+            self._rng = random.Random(self.c.branch_seed)
+
+    def process(self, bgr, dt_s, debug=False):
         """Run one frame. Returns `state`; with debug=True returns (state, dbg), the
-        second being intermediates for render_panels (masks, lanes, windows, ec, ...)."""
+        second being intermediates for render_panels (masks, lanes, windows, ec, ...).
+
+        `dt_s` is the interval since the previous frame, in SECONDS, and it is REQUIRED --
+        every filter in here (lane-coeff EMA, corridor-width EMA, center_error EMA) and every
+        failsafe threshold (`lost_reset_s`, `lost_stop_s`, `outlier_relatch_s`) is expressed
+        as a physical duration. Perception cannot measure its own dt (it does not own the
+        clock or the frame stamps), so the caller must pass it: `perception_node` from the
+        ROS clock, the offline tools from the clip's fps.
+
+        Pass 0.0 for the first frame -- no time has passed, so the EMAs seed rather than
+        blend, which is exactly right. It is a required positional argument on purpose: the
+        old `process(frame, debug=True)` call now raises TypeError instead of quietly
+        binding `True` to `dt_s`.
+        """
+        dt_s = max(0.0, float(dt_s))
         c = self.c
         h, w = bgr.shape[:2]
 
@@ -1164,7 +1262,7 @@ class LanePipeline:
         windows = []
         lanes = (sliding_window_lanes(mw, 'W', c, windows) +
                  sliding_window_lanes(my, 'Y', c, windows))
-        mL, mR = self.trk.update(lanes)
+        mL, mR = self.trk.update(lanes, dt_s)
 
         # The vehicle axis, not the image centre. They coincide only when the camera is
         # mounted dead centre (lateral_offset_cm = 0); `cam.axis_u` is the real one, and it
@@ -1192,7 +1290,7 @@ class LanePipeline:
             self._in_branch = False
         if branch_pick is not None:
             mL, mR = branch_pick['a'], branch_pick['b']     # ego_center picks this up as
-            self.trk.adopt(mL, mR)                          # 'tracked' -- and STAYS there
+            self.trk.adopt(mL, mR, dt_s)                    # 'tracked' -- and STAYS there
         # `if self.trk.width` was the test, and a NEGATIVE width is truthy -- it sailed straight
         # through into `ego_center`, which then returned None on `width <= 0`. Belt and braces:
         # `_measure_width` can no longer produce one, and this can no longer pass one on.
@@ -1203,7 +1301,7 @@ class LanePipeline:
         # the tracker was following the wrong thing. Take the proven identity (see adopt()).
         if (ec is not None and ec.get('b') is not None
                 and (ec['a'] is not mL or ec['b'] is not mR)):
-            self.trk.adopt(ec['a'], ec['b'])
+            self.trk.adopt(ec['a'], ec['b'], dt_s)
         # A coast the mask contradicted. Reseat the tracker so the correction STICKS --
         # otherwise it un-corrects itself next frame and oscillates (see reseat_coast).
         elif ec is not None and ec.get('flipped'):
@@ -1222,7 +1320,7 @@ class LanePipeline:
         right_conf = 1.0 if mR is not None else 0.0
         used_fb = bool(ec is not None and ec.get('coast'))
 
-        ema, fstate = self.stab.update(center_error, confidence)
+        ema, fstate = self.stab.update(center_error, confidence, dt_s)
 
         state = {
             'center_error': center_error, 'ema': ema,
@@ -1279,7 +1377,7 @@ def _inst_color(idx):
 def render_panels(bgr, dbg, cfg):
     """Online debug multi-panel (4 panels):
       [ input+ROI | mask | sliding windows+lanes | label+ego overlay ].
-    Built only from `LanePipeline.process(debug=True)` intermediates (no
+    Built only from `LanePipeline.process(..., debug=True)` intermediates (no
     re-implementation). perception_node publishes this on /lane/debug/compressed.
 
     Panels 2-3 show the METRIC top-down view (that is where the lanes are actually found),
