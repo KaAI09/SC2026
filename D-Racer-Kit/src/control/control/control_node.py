@@ -64,7 +64,7 @@ from dracer_core.profile import load_profile, section
 
 
 # CtrlCfg fields exposed as live-tunable ROS params (rebuilt on `ros2 param set`).
-_CTRL_FLOATS = ('kp', 'kd', 'ki', 'center_target', 'steer_max', 'steer_sign',
+_CTRL_FLOATS = ('kp', 'kd', 'ki', 'i_clamp', 'center_target', 'steer_max', 'steer_sign',
                 'slew_rate_per_sec', 'out_ema', 'throttle_base', 'throttle_min',
                 'curv_slow', 'conf_gate', 'throttle_outlier', 'dt_max')
 _CTRL_PARAMS = ('controller',) + _CTRL_FLOATS
@@ -109,11 +109,12 @@ class ControlNode(Node):
         p('joystick_timeout', 0.3)
         # offline-selected profile (authoritative for the fields it specifies)
         p('profile', '')
-        # control (C2 PD defaults, conservative)
-        p('controller', 'C2')
+        # control (PD defaults, conservative)
+        p('controller', 'PD')   # 'PD' | 'PID' -- an unknown name raises at build time
         p('kp', 0.5)
         p('kd', 0.1)
         p('ki', 0.0)
+        p('i_clamp', 0.5)       # PID anti-windup bound (unused by PD)
         p('center_target', 0.0)
         p('steer_max', 0.7)   # = 1.0 - |STEER_TRIM|; above this the actuator's trim clips
         p('steer_sign', 1.0)

@@ -2,16 +2,15 @@
 parameterized).
 
 Mirrors the perception `perception_core` pattern: one config dataclass, controller
-"modes" as presets C1..C5, and a stateful `Controller.step()` that maps a lane
-state to a (steering, throttle) command. The PRINCIPLE of each controller is
-fixed; everything that depends on the vehicle, track, or camera/resolution is a
-parameter so the same code retunes to any track.
+"modes" as presets, and a stateful `Controller.step()` that maps a lane state to a
+(steering, throttle) command. The PRINCIPLE of each controller is fixed; everything
+that depends on the vehicle, track, or camera/resolution is a parameter so the same
+code retunes to any track.
 
     from dracer_core.control_core import Controller, make_ctrl
-    ctrl = Controller(make_ctrl('C2', kp=0.7, center_target=-0.15))
+    ctrl = Controller(make_ctrl('PD', kp=0.7, center_target=-0.15))
     steer, thr, info = ctrl.step({'center_error': ce, 'ema': ema,
-                                  'heading': hd_deg, 'confidence': conf,
-                                  'speed': throttle_proxy}, dt)
+                                  'confidence': conf, 'state': st}, dt)
 
 This module NEVER actuates. It only computes a command; a separate ROS node
 would publish it, gated by the vehicle-safety layer.
@@ -26,14 +25,24 @@ meaning attached; the code was right and the sentence was wrong. `steer_sign` fl
 the emitted value for a vehicle wired the other way -- and it is applied in exactly
 one place, `_emit()`.
 
-Controllers (C6 bang-bang intentionally omitted; C7 learning is optional/later):
-  C1 P            steering = -Kp*e
-  C2 PD           steering = -(Kp*e + Kd*e_dot)                [RC-car baseline]
-  C3 PID          steering = -(Kp*e + Kd*e_dot + Ki*integral)
-  C4 PurePursuit  geometry: curvature to a lookahead lane point
-  C5 Stanley      cross-track + heading (needs a reliable heading)
+Controllers:
+  PD    steering = -(Kp*e + Kd*e_dot)                [default -- the 0711 completion runs]
+  PID   steering = -(Kp*e + Kd*e_dot + Ki*integral)  [no anti-windup yet]
+
+PURE PURSUIT IS NOT HERE, AND THAT IS DELIBERATE. A pure-pursuit law needs the lateral
+error at a lookahead point as a REAL DISTANCE. Computing it from a normalized image
+coordinate gives you a "lookahead" that is not a distance and a "curvature" that is not
+a curvature -- a lateral-error regulator wearing a geometry costume, i.e. a PD with
+extra steps. Shipping that as an option only lets someone believe the car is doing pure
+pursuit when it is not.
+
+A real one needs the metric BEV that perception already has: take the centre-line
+polynomial at a lookahead of Ld cm, read the lateral error THERE in cm, and get
+curvature = 2*x_cm/Ld^2 -> steer = atan(wheelbase*curvature). Its parameters are
+MEASUREMENTS (wheelbase, max steering angle), not gains, and it hands you
+curvature-based braking for free. That needs a LaneState field carrying the lookahead
+error, so it is a contract change -- see README.md, remaining work B1.
 """
-import math
 from dataclasses import dataclass, replace
 
 
@@ -43,8 +52,8 @@ def clamp(v, lo, hi):
 
 @dataclass
 class CtrlCfg:
-    name: str = 'C1'
-    controller: str = 'P'          # 'P'|'PD'|'PID'|'PURE_PURSUIT'|'STANLEY'
+    name: str = 'PD'
+    controller: str = 'PD'         # 'PD'|'PID'
 
     # --- error source / setpoint (DETECTION + TRACK dependent) ---
     use_ema: bool = True           # use smoothed center (ema) vs raw center_error
@@ -55,15 +64,6 @@ class CtrlCfg:
     kd: float = 0.15
     ki: float = 0.0
     i_clamp: float = 0.5           # anti-windup bound on the integral
-
-    # --- pure pursuit (GEOMETRY; lookahead in normalized view-depth 0..1) ---
-    lookahead: float = 0.6
-    pp_gain: float = 0.4
-
-    # --- stanley ---
-    stanley_k: float = 1.0
-    stanley_soft: float = 0.15     # softening term (avoids blow-up at low speed)
-    heading_gain: float = 1.0
 
     # --- vehicle / output shaping (VEHICLE dependent) ---
     steer_max: float = 1.0
@@ -94,20 +94,24 @@ class CtrlCfg:
 
 
 PRESETS = {
-    'C1': CtrlCfg(name='C1 P',           controller='P'),
-    'C2': CtrlCfg(name='C2 PD',          controller='PD'),
-    'C3': CtrlCfg(name='C3 PID',         controller='PID', ki=0.05),
-    'C4': CtrlCfg(name='C4 PurePursuit', controller='PURE_PURSUIT'),
-    'C5': CtrlCfg(name='C5 Stanley',     controller='STANLEY'),
-    # C6 bang-bang: intentionally omitted.
-    # C7 learning/behavior-cloning: optional, trained on-site later.
+    'PD':  CtrlCfg(name='PD',  controller='PD'),
+    'PID': CtrlCfg(name='PID', controller='PID', ki=0.05),
+    # Pure pursuit: see the module docstring -- it needs the metric lookahead error
+    # that LaneState does not carry yet.
 }
 
 
-def make_ctrl(mode='C1', **overrides):
-    base = PRESETS.get(mode, PRESETS['C1'])
+def make_ctrl(mode='PD', **overrides):
+    """Build a CtrlCfg from a preset name.
+
+    An unknown name RAISES. It used to fall back to P, which meant a typo in the
+    profile (`controller: PD2`) put the car on a different controller than the one
+    written down, silently, at speed.
+    """
+    if mode not in PRESETS:
+        raise ValueError(f'unknown controller {mode!r}; expected one of {sorted(PRESETS)}')
     ov = {k: v for k, v in overrides.items() if v is not None}
-    return replace(base, **ov) if ov else base
+    return replace(PRESETS[mode], **ov) if ov else PRESETS[mode]
 
 
 class Controller:
@@ -159,26 +163,16 @@ class Controller:
         e = center - c.center_target
         de = 0.0 if (self.prev_e is None or dt_s <= 0) else (e - self.prev_e) / dt_s
         self.prev_e = e
-        heading = math.radians(st.get('heading') or 0.0)
-        speed = max(1e-3, float(st.get('speed', c.throttle_base)))
 
-        if c.controller == 'P':
-            u = -(c.kp * e)
-        elif c.controller == 'PD':
+        if c.controller == 'PD':
             u = -(c.kp * e + c.kd * de)
         elif c.controller == 'PID':
             self.integ = clamp(self.integ + e * dt_s, -c.i_clamp, c.i_clamp)
             u = -(c.kp * e + c.kd * de + c.ki * self.integ)
-        elif c.controller == 'PURE_PURSUIT':
-            # lateral offset of the lane at the lookahead, projected via heading;
-            # pure-pursuit curvature ~ 2*x_L / Ld^2  (normalized image geometry)
-            x_l = e + math.tan(heading) * c.lookahead
-            u = -c.pp_gain * (2.0 * x_l) / (c.lookahead ** 2 + 1e-6)
-        elif c.controller == 'STANLEY':
-            cross = math.atan2(c.stanley_k * e, c.stanley_soft + speed)
-            u = -(c.heading_gain * heading + cross)
         else:
-            u = 0.0
+            # make_ctrl() rejects unknown names, so reaching this means the cfg was
+            # built by hand. Refuse to steer rather than invent a command.
+            raise ValueError(f'unknown controller {c.controller!r}')
 
         gated = None
         if conf < c.conf_gate:

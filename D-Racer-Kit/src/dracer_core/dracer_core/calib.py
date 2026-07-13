@@ -34,7 +34,8 @@ COORDINATES
   So the BEV bottom edge is the NEAREST ground row and the image is metric and
   isotropic: a lane is the same width in px at the top and at the bottom. That is
   what makes `perception_core._shift` (a constant-offset parallel shift) physically
-  valid -- in the front view it is not, and that is limitation §6(c) in PERCEPTION.md.
+  valid. In the front view it is not: lane width shrinks with distance, so a constant
+  shift diverges toward the top of the frame. That is why the front-view path was removed.
 
 This module NEVER commands the vehicle and never detects a lane; it only changes
 coordinates.
@@ -384,41 +385,6 @@ def calibrate_intrinsics(images, pattern, square_mm):
     return K, D.ravel(), float(rms), len(obj_pts), size
 
 
-def ground_homography(img, K, D, pattern, square_mm, near_cm, lateral_cm=0.0):
-    """H (undistorted px -> BEV px) from ONE photo of the board LYING ON THE GROUND.
-
-    The board defines the ground plane AND the metric scale. Placement contract:
-      * board laid flat on the track surface, roughly square to the vehicle,
-      * `near_cm`   = forward distance (cm) from the camera to the board's NEAREST
-                      corner row  -- measure it with a tape,
-      * `lateral_cm`= lateral offset (cm) of the board's centre from the vehicle axis
-                      (0 if you centred it; + = board sits to the RIGHT).
-
-    Returns (H_partial, ground_pts_cm, img_pts_und, rms) where H_partial maps
-    undistorted px -> GROUND cm. The caller turns cm -> BEV px once the grid is chosen.
-    """
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
-    corners = find_corners(gray, pattern)
-    if corners is None:
-        raise RuntimeError('no chessboard found in the ground photo')
-    und = cv2.undistortPoints(corners, K, D, P=K).reshape(-1, 2)
-
-    cols, rows = pattern
-    sq_cm = square_mm / 10.0
-    # board grid -> ground cm. Corner order must match cv2.findChessboardCorners:
-    # ROW-MAJOR (index k = r*cols + c), same as `object_grid`. Board is centred on
-    # `lateral_cm`; its FIRST corner row is the FAR one, its LAST row sits at `near_cm`.
-    gx, gy = np.meshgrid(np.arange(cols), np.arange(rows))   # gx[r][c] = c, gy[r][c] = r
-    x_cm = (gx.ravel() - (cols - 1) / 2.0) * sq_cm + lateral_cm
-    y_cm = near_cm + (rows - 1 - gy.ravel()) * sq_cm
-    ground = np.stack([x_cm, y_cm], -1).astype(np.float32)
-
-    Hg, _ = cv2.findHomography(und, ground, method=0)   # exact LS over all corners
-    proj = cv2.perspectiveTransform(und.reshape(-1, 1, 2), Hg).reshape(-1, 2)
-    rms = float(np.sqrt(((proj - ground) ** 2).sum(axis=1).mean()))
-    return Hg, ground, und, rms
-
-
 def ground_pose(img, K, D, pattern, square_mm):
     """H from ONE photo of the board lying on the ground -- WITHOUT measuring near_cm.
 
@@ -473,64 +439,6 @@ def ground_pose(img, K, D, pattern, square_mm):
     rms = float(np.sqrt(((proj - ground) ** 2).sum(axis=1).mean()))
     return (Hg, height_mm / 10.0, float(ground[:, 1].min()),
             float(ground[:, 0].mean()), rms)
-
-
-def refine_with_lanes(cam, lane_pairs, lane_width_cm):
-    """Align the BEV plane to the LANES, not to the calibration board.
-
-    WHY THIS IS NEEDED (and is not cheating):
-      A BEV assumes the ground is a plane. The chessboard gives us a plane -- but the
-      board's plane, which is a rigid clipboard lying on a WRINKLED mat, a few mm above
-      it and tilted by whatever the mat does underneath. The lanes live on the mat.
-      Measured on the real track, that gap shows up exactly as you would predict: the
-      board reprojects to 0.04% but the lane gap shrinks with distance
-      (31.5cm at 30cm -> 27.0cm at 74cm, against a real 35cm), i.e. the two planes are
-      tilted relative to each other and the perspective is not fully removed.
-
-      The chessboard is still what fixes the SCALE (a 25mm square is a known ruler).
-      This step only re-seats the plane on the surface we actually measure. The lane
-      width is an independent, physically measured quantity (35cm centre-to-centre), so
-      we are fitting to a known truth, not to ourselves.
-
-    Constraint: on a straight, the two boundaries must be PARALLEL and exactly
-    `lane_width_cm` apart at EVERY forward distance. We keep each frame's observed lane
-    CENTRE (the car may sit off-centre — that is signal, not error) and only correct the
-    width, which forces parallelism as a by-product.
-
-    `lane_pairs`: [(coeffs_left, coeffs_right, v_lo, v_hi), ...] in CURRENT BEV coords,
-    from straight-section frames. Returns a NEW CameraModel (does not mutate `cam`).
-    """
-    def _at(coeffs, v):
-        return coeffs[0] * v * v + coeffs[1] * v + coeffs[2]
-
-    w_px = cam.lane_width_px(lane_width_cm)
-    src, dst = [], []
-    for cl, cr, v_lo, v_hi in lane_pairs:
-        for v in np.linspace(float(v_lo), float(v_hi), 12):
-            xl, xr = _at(cl, v), _at(cr, v)
-            if not (np.isfinite(xl) and np.isfinite(xr)) or xr <= xl:
-                continue
-            xc = (xl + xr) / 2.0                 # keep the observed centre
-            src += [[xl, v], [xr, v]]
-            dst += [[xc - w_px / 2.0, v], [xc + w_px / 2.0, v]]
-    if len(src) < 16:
-        raise RuntimeError(f'need more straight-lane samples, got {len(src)//2}')
-    src = np.asarray(src, np.float32).reshape(-1, 1, 2)
-    dst = np.asarray(dst, np.float32).reshape(-1, 1, 2)
-    H2, inl = cv2.findHomography(src, dst, cv2.RANSAC, 3.0)
-    if H2 is None:
-        raise RuntimeError('lane refinement homography failed')
-    proj = cv2.perspectiveTransform(src, H2)
-    rms = float(np.sqrt(((proj - dst) ** 2).sum(axis=2).mean())) / cam.px_per_cm
-
-    m = CameraModel(
-        image_size=cam.image_size, K=cam.K.copy(), D=cam.D.copy(),
-        H=H2 @ cam.H,                            # BEV-space correction, composed in
-        px_per_cm=cam.px_per_cm, x_half_cm=cam.x_half_cm,
-        y_near_cm=cam.y_near_cm, y_far_cm=cam.y_far_cm,
-        lateral_offset_cm=cam.lateral_offset_cm,
-        rms_px=cam.rms_px, ground_rms_px=cam.ground_rms_px, square_mm=cam.square_mm)
-    return m, rms, int(inl.sum()) if inl is not None else len(src)
 
 
 def ground_extent(Hg, K, D, image_size, margin=0.02):

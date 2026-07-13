@@ -1,7 +1,7 @@
 """Pipeline launch 2 — record: manual drive + RAW camera recording.
 
 Base nodes + recorder capturing the RAW camera stream (not the perception
-overlay) so offline perception (offline/perception_probe.py) sees unannotated
+overlay) so offline replay (offline/panel_replay.py) sees unannotated
 frames. No perception -> raw IS the main stream, so the recorder writes only
 raw/ + csv/ (no panel/). Joystick START toggles each recording session.
 

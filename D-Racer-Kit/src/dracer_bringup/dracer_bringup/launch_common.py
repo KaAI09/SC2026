@@ -61,8 +61,8 @@ def base_nodes(vehicle_config, *, calibration_mode, use_joystick_control, image_
     - monitor   : web dashboard (:5000), streams `image_topic` low-latency
     - battery   : /battery_status (feeds the monitor battery panel)
 
-    `command_hz` is a LAUNCH ARGUMENT (not baked in) so the pre-0712 rate can be restored
-    on the board without a rebuild -- see ROLLBACK.md.
+    `command_hz` is a LAUNCH ARGUMENT (not baked in): it creates a timer at node
+    construction, so it cannot be changed with `ros2 param set` on a running car.
     """
     return [
         Node(package='camera', executable='camera_node', name='camera_node',

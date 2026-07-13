@@ -142,8 +142,7 @@ class Cfg:
     # coast side check (falsify the coast's left/right against the mask; `coast_side`)
     coast_flip_support: float = 0.15   # the MIRROR assumption needs at least this fraction of
                                        # its rows backed by mask pixels before we believe it
-                                       # over the tracker. <= 0 disables the check entirely
-                                       # (pre-0712 behaviour; see ROLLBACK.md).
+                                       # over the tracker. <= 0 disables the check entirely.
                                        #
                                        # Measured over the 20 coast->pair transitions in the
                                        # 0711 runs (the pair that ends a coast reveals that
@@ -169,10 +168,10 @@ class Cfg:
     jump_max: float = 120.0
     lost_reset: int = 8
     track_width_tol: float = 0.25   # Tracker: accept a width MEASUREMENT only within this
-                                    # fraction of lane_width_cm. <= 0 accepts anything, which
-                                    # is the pre-0712 behaviour. Deliberately NOT the same
-                                    # knob as `pair_width_tol` (which gates lane_centers'
-                                    # pairing): turning one off must not turn the other off.
+                                    # fraction of lane_width_cm. <= 0 accepts anything.
+                                    # Deliberately NOT the same knob as `pair_width_tol`
+                                    # (which gates lane_centers' pairing): turning one off
+                                    # must not turn the other off.
     # scalar output stabilizer (smooths center_error + names the failsafe state)
     ema_alpha: float = 0.4
     outlier_jump: float = 0.5
@@ -649,8 +648,9 @@ def coast_side(near, dx, mask, c, margin, cx):
     A coast takes ONE boundary and asserts the corridor lies to its left or its right. The
     assertion is the tracker's identity, and when that identity is wrong the corridor centre
     lands a full lane width from the truth -- with a perfect lane fit, a 0.98 span and a
-    1.3cm residual. Nothing about the GEOMETRY of a wrong coast looks wrong (PERCEPTION.md
-    §8-); the fit is immaculate, it is simply pointed the wrong way.
+    1.3cm residual. Nothing about the GEOMETRY of a wrong coast looks wrong (a continuous
+    quality score was measured and rejected: corr(quality, error) = +0.246, the WRONG sign);
+    the fit is immaculate, it is simply pointed the wrong way.
 
     So ask the one question geometry cannot: PUT THE PHANTOM BOUNDARY WHERE WE CLAIM IT IS,
     AND LOOK. If the far boundary we are synthesising has no mask under it, but the mirror
@@ -854,7 +854,7 @@ class Tracker:
         Rejecting a measurement is safe: the fallback is `lane_width_default`, which
         `cfg_to_px` sets to the real, physically measured lane width.
 
-        `track_width_tol <= 0` restores the pre-0712 "accept anything" behaviour (ROLLBACK.md).
+        `track_width_tol <= 0` accepts any measured width.
         """
         if self.c.track_width_tol <= 0:
             return True
@@ -909,9 +909,9 @@ class Tracker:
         # width, `Tracker.width` goes negative, and `ego_center` bails out on `width <= 0` --
         # every frame, forever. Perception reports LOST at 71% while staring at two good lanes.
         #
-        # (Found by running the ROLLBACK profile, which turns `track_width_tol` off: the width
-        # gate had been rejecting the impossible pairs and hiding this. A guard that only holds
-        # while another guard holds is not a guard.)
+        # (Found with `track_width_tol` turned off: the width gate had been rejecting the
+        # impossible pairs and hiding this. A guard that only holds while another guard holds
+        # is not a guard.)
         #
         # An inverted pair means one of the two matches is wrong. Keep the closer one -- it is
         # the better-evidenced -- and let the other side coast.
@@ -1112,8 +1112,8 @@ class LanePipeline:
     a constant pixel offset -- which is only a constant DISTANCE in a BEV. None of the
     physical gates this pipeline now depends on (lane width, pairing, coast side) can even be
     asked in a perspective image, and the cm config that drives them would be meaningless.
-    Its last caller (`offline/control_predict.py`) was not using it deliberately; it was
-    predicting control commands from a pipeline the car does not run.
+    Its last caller (the offline control-prediction tool, since removed) was not using it
+    deliberately; it was predicting control commands from a pipeline the car does not run.
 
     A missing camera.yaml is now a hard failure, and that is the safe behaviour: the car
     does not move (control_node's perception watchdog sees no /lane/state and publishes

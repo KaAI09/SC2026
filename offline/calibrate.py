@@ -199,8 +199,6 @@ def main():
                     help='카메라 높이 실측 (cm). 주면 복원값과 교차검증한다 (필수 아님)')
     ap.add_argument('--runtime-size', type=_pattern, default=(320, 160),
                     help='런타임(인지) 해상도 WxH — 여기로 정확히 rescale 해서 저장')
-    ap.add_argument('--lateral-cm', type=float, default=0.0,
-                    help='지면 보드 중심의 차량축 대비 횡방향 offset (cm, + = 오른쪽)')
     ap.add_argument('--axis-offset-cm', type=float, default=0.0,
                     help='카메라가 차량 중심에 안 붙었을 때의 축 보정 (cm, + = 축을 오른쪽으로)')
     ap.add_argument('--px-per-cm', type=float, default=2.0, help='BEV 스케일 (기본 1px=5mm)')

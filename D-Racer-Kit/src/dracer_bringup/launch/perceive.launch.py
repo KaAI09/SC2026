@@ -31,8 +31,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'camera', default_value=default_camera_path(),
-            description='camera calibration YAML -> metric BEV. Empty string = front-view '
-                        '(legacy; PERCEPTION.md §6 limitations apply)'),
+            description='camera calibration YAML -> metric BEV. REQUIRED: the pipeline '
+                        'raises ValueError without it (front-view path was removed)'),
         DeclareLaunchArgument('profile', default_value=default_profile_path(),
                               description='driving profile YAML ([perception] applied)'),
         DeclareLaunchArgument('record_dir', default_value=default_record_dir(),

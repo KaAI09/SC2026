@@ -37,8 +37,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'camera', default_value=default_camera_path(),
-            description='camera calibration YAML -> metric BEV. Empty string = front-view '
-                        '(legacy; PERCEPTION.md §6 limitations apply)'),
+            description='camera calibration YAML -> metric BEV. REQUIRED: the pipeline '
+                        'raises ValueError without it (front-view path was removed)'),
         DeclareLaunchArgument('profile', default_value=default_profile_path(),
                               description='driving profile YAML ([perception] + [control])'),
         DeclareLaunchArgument('record_dir', default_value=default_record_dir(),
@@ -47,17 +47,14 @@ def generate_launch_description():
                               description='start autonomously actuating (keep false; '
                                           'set true only after wheels-off checks)'),
         # Both rates are launch args, NOT constants, because they are set once at node
-        # construction (each creates a timer) and so cannot be walked back with `ros2 param
-        # set` on a running car. The 0711 values were command_hz=10 / publish_rate=20 --
-        # see ROLLBACK.md to restore the whole validated configuration.
+        # construction (each creates a timer) and so cannot be changed with `ros2 param set`
+        # on a running car.
         DeclareLaunchArgument('command_hz', default_value='30.0',
-                              description='actuator servo write rate (0711 value: 10.0). '
-                                          'Gates E-STOP / watchdog latency. Ceiling is the '
-                                          '50Hz PWM.'),
+                              description='actuator servo write rate. Gates E-STOP / watchdog '
+                                          'latency. Ceiling is the 50Hz PWM.'),
         DeclareLaunchArgument('publish_rate', default_value='30.0',
-                              description='control_node /control rate (0711 value: 20.0). '
-                                          'Should be >= the perception rate or commands are '
-                                          'dropped.'),
+                              description='control_node /control rate. Should be >= the '
+                                          'perception rate or commands are dropped.'),
         *base_nodes(
             vehicle_config,
             calibration_mode=False,
