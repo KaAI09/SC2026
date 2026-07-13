@@ -35,7 +35,7 @@
 ### 3-1. 빌드
 
 ```bash
-cd /home/topst/D-Racer
+cd /home/topst/SC2026/D-Racer-Kit
 colcon build --packages-select camera
 source install/setup.bash
 ```
@@ -54,7 +54,7 @@ ros2 run camera camera_node
 [camera_device] : /dev/video1
 [flip_method] : rotate-180
 [jpeg_quality] : 90
-[vehicle_config_file] : /home/topst/D-Racer/src/config/vehicle_config.yaml
+[vehicle_config_file] : /home/topst/SC2026/D-Racer-Kit/src/config/vehicle_config.yaml
 [debug_log] : False
 ```
 
@@ -83,7 +83,7 @@ ros2 run camera camera_node --ros-args -p debug_log:=true
 [camera_device] : /dev/video1
 [flip_method] : rotate-180
 [jpeg_quality] : 90
-[vehicle_config_file] : /home/topst/D-Racer/src/config/vehicle_config.yaml
+[vehicle_config_file] : /home/topst/SC2026/D-Racer-Kit/src/config/vehicle_config.yaml
 [debug_log] : False
 ```
 

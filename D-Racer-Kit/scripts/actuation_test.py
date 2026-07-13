@@ -203,8 +203,8 @@ def main():
     except KeyboardInterrupt:
         print('\n  KeyboardInterrupt -> neutral')
     finally:
-        log('exit_neutral', '')
         node.stop()
+        log('exit_neutral', '')
         log_file.close()
         print(f'\nNeutral sent. Log saved to: {log_path}')
         node.destroy_node()

@@ -1,6 +1,4 @@
 import os
-import signal
-import subprocess
 import threading
 import time
 from pathlib import Path
@@ -10,8 +8,8 @@ from rclpy.node import Node
 from rclpy.parameter import Parameter
 import yaml
 
-from control_msgs.msg import Control
-from joystick_msgs.msg import Joystick
+from dracer_msgs.msg import Control
+from dracer_msgs.msg import Joystick
 from topst_utils.gamepads import ShanWanGamepad
 
 
@@ -20,15 +18,7 @@ def get_default_vehicle_config_path():
         candidate = base_path / 'src' / 'config' / 'vehicle_config.yaml'
         if candidate.exists():
             return str(candidate)
-    return '/home/topst/D-Racer/src/config/vehicle_config.yaml'
-
-
-def get_default_data_acquisition_script_path():
-    for base_path in Path(__file__).resolve().parents:
-        candidate = base_path / 'src' / 'data_acquisition.sh'
-        if candidate.exists():
-            return str(candidate)
-    return '/home/topst/D-Racer/src/data_acquisition.sh'
+    return '/home/topst/SC2026/D-Racer-Kit/src/config/vehicle_config.yaml'
 
 
 class JoystickNode(Node):
@@ -46,10 +36,6 @@ class JoystickNode(Node):
         self.declare_parameter('calibration_mode', False)
         self.declare_parameter('calibration_step', 0.1)
         self.declare_parameter('vehicle_config_file', get_default_vehicle_config_path())
-        self.declare_parameter(
-            'data_acquisition_script',
-            get_default_data_acquisition_script_path(),
-        )
         self.declare_parameter('accel_ratio_step', 0.005)
         self.declare_parameter('accel_ratio_min', 0.12)
         self.declare_parameter('accel_ratio_max', 0.4)
@@ -70,9 +56,6 @@ class JoystickNode(Node):
         self.calibration_step = float(self.get_parameter('calibration_step').value)
         self.vehicle_config_file = os.path.expanduser(
             str(self.get_parameter('vehicle_config_file').value)
-        )
-        self.data_acquisition_script = os.path.expanduser(
-            str(self.get_parameter('data_acquisition_script').value)
         )
         self.accel_ratio_step = float(self.get_parameter('accel_ratio_step').value)
         self.accel_ratio_min = float(self.get_parameter('accel_ratio_min').value)
@@ -96,9 +79,10 @@ class JoystickNode(Node):
         self._prev_b_pressed = False
         self._prev_x_pressed = False
         self._prev_start_pressed = False
+        self._prev_a_pressed = False
         self.e_stop_latched = False
         self.is_recording = False
-        self.recording_process = None
+        self.engage_latched = False       # A button toggles autonomous engage
         self._debug_left_y = 0.0
         self._debug_right_x = 0.0
         self._debug_right_y = 0.0
@@ -132,7 +116,6 @@ class JoystickNode(Node):
             f'steering_deadzone={self.steering_deadzone}, steering_axis={self.steering_axis}, '
             f'steering_trim={self.steering_trim}, calibration_mode={self.calibration_mode}, '
             f'calibration_step={self.calibration_step}, vehicle_config_file={self.vehicle_config_file}, '
-            f'data_acquisition_script={self.data_acquisition_script}, '
             f'accel_ratio={self.accel_ratio}, accel_ratio_step={self.accel_ratio_step}, '
             f'accel_ratio_min={self.accel_ratio_min}, accel_ratio_max={self.accel_ratio_max}, '
             f'debug_log_enable={self.debug_log_enable}, debug_log_hz={self.debug_log_hz}'
@@ -160,13 +143,18 @@ class JoystickNode(Node):
             return
 
         saved_trim = calibration_data.get('STEER_TRIM')
-        if saved_trim is None:
-            return
+        if saved_trim is not None:
+            self.steering_trim = float(saved_trim)
+            self.set_parameters([
+                Parameter('steering_trim', Parameter.Type.DOUBLE, self.steering_trim),
+            ])
 
-        self.steering_trim = float(saved_trim)
-        self.set_parameters([
-            Parameter('steering_trim', Parameter.Type.DOUBLE, self.steering_trim),
-        ])
+        saved_accel = calibration_data.get('ACCEL_RATIO')
+        if saved_accel is not None:
+            self.accel_ratio = self.clamp(
+                float(saved_accel), self.accel_ratio_min, self.accel_ratio_max)
+            self.get_logger().info(
+                f'loaded ACCEL_RATIO={self.accel_ratio:.3f} from vehicle config')
 
     def save_calibration(self):
         calibration_dir = os.path.dirname(self.vehicle_config_file)
@@ -184,6 +172,7 @@ class JoystickNode(Node):
                 )
 
         config_data['STEER_TRIM'] = float(self.steering_trim)
+        config_data['ACCEL_RATIO'] = float(self.accel_ratio)
 
         with open(self.vehicle_config_file, 'w', encoding='utf-8') as calibration_stream:
             yaml.safe_dump(config_data, calibration_stream, sort_keys=False)
@@ -220,6 +209,7 @@ class JoystickNode(Node):
     def update_accel_ratio_from_buttons(self, data):
         l1_pressed = bool(data.button_L1)
         r1_pressed = bool(data.button_R1)
+        accel_changed = False
 
         if l1_pressed and not self._prev_l1_pressed:
             self.accel_ratio = self.clamp(
@@ -227,6 +217,7 @@ class JoystickNode(Node):
                 self.accel_ratio_min,
                 self.accel_ratio_max,
             )
+            accel_changed = True
             self.get_logger().info(f'accel_ratio decreased to {self.accel_ratio:.3f}')
 
         if r1_pressed and not self._prev_r1_pressed:
@@ -235,7 +226,14 @@ class JoystickNode(Node):
                 self.accel_ratio_min,
                 self.accel_ratio_max,
             )
+            accel_changed = True
             self.get_logger().info(f'accel_ratio increased to {self.accel_ratio:.3f}')
+
+        if accel_changed:                       # persist like steering_trim
+            try:
+                self.save_calibration()
+            except Exception as exc:
+                self.get_logger().error(f'Failed to save accel_ratio calibration: {exc}')
 
         self._prev_l1_pressed = l1_pressed
         self._prev_r1_pressed = r1_pressed
@@ -249,73 +247,32 @@ class JoystickNode(Node):
 
         self._prev_x_pressed = x_pressed
 
-    def start_recording(self):
-        if self.recording_process is not None and self.recording_process.poll() is None:
-            self.is_recording = True
-            return
-
-        script_path = Path(self.data_acquisition_script)
-        if not script_path.exists():
-            self.is_recording = False
-            self.recording_process = None
-            self.get_logger().error(f'Data acquisition script not found: {script_path}')
-            return
-
-        try:
-            self.recording_process = subprocess.Popen(
-                [str(script_path)],
-                cwd=str(script_path.parent),
-                start_new_session=True,
-            )
-            self.is_recording = True
-            self.get_logger().info(f'Recording started: {script_path}')
-        except Exception as exc:
-            self.is_recording = False
-            self.recording_process = None
-            self.get_logger().error(f'Failed to start recording: {exc}')
-
-    def stop_recording(self):
-        process = self.recording_process
-        self.recording_process = None
-        self.is_recording = False
-
-        if process is None or process.poll() is not None:
-            return
-
-        try:
-            process.send_signal(signal.SIGTERM)
-            process.wait(timeout=5.0)
-            self.get_logger().info('Recording stopped')
-        except subprocess.TimeoutExpired:
-            self.get_logger().warning('Recording did not stop in time. Sending SIGKILL.')
-            os.killpg(process.pid, signal.SIGKILL)
-            process.wait(timeout=2.0)
-        except ProcessLookupError:
-            pass
-        except Exception as exc:
-            self.get_logger().error(f'Failed to stop recording cleanly: {exc}')
-
-    def sync_recording_state(self):
-        if self.recording_process is None:
-            self.is_recording = False
-            return
-
-        if self.recording_process.poll() is not None:
-            self.recording_process = None
-            self.is_recording = False
-            self.get_logger().info('Recording process exited')
-
     def update_recording_from_buttons(self, data):
+        # START toggles is_recording, published in the Joystick msg. recorder_node
+        # mirrors this flag to start/stop its mp4 + csv. No rosbag is spawned here.
         start_pressed = bool(data.button_start)
 
         if start_pressed and not self._prev_start_pressed:
-            self.sync_recording_state()
-            if self.is_recording:
-                self.stop_recording()
-            else:
-                self.start_recording()
+            self.is_recording = not self.is_recording
+            self.get_logger().info(
+                'recording started (recorder mp4+csv)' if self.is_recording
+                else 'recording stopped')
 
         self._prev_start_pressed = start_pressed
+
+    def update_engage_from_buttons(self, data):
+        # A toggles autonomous engage, published in the Joystick msg. driving_node
+        # OR-combines this with its `engage` param (either can engage). E-STOP wins:
+        # a latched X forces engage off here so the flag can never re-enable output.
+        if self.e_stop_latched:
+            self.engage_latched = False
+        a_pressed = bool(data.button_a)
+        if a_pressed and not self._prev_a_pressed and not self.e_stop_latched:
+            self.engage_latched = not self.engage_latched
+            self.get_logger().warning(
+                'ENGAGE ON (joystick A) — autonomous output enabled' if self.engage_latched
+                else 'engage off (joystick A)')
+        self._prev_a_pressed = a_pressed
 
     def read_steering_axis(self, data):
         right_x = self.clamp(data.analog_stick_right.x)
@@ -334,6 +291,7 @@ class JoystickNode(Node):
                 self.update_accel_ratio_from_buttons(data)
                 self.update_steering_trim_from_buttons(data)
                 self.update_e_stop_from_buttons(data)
+                self.update_engage_from_buttons(data)
                 self.update_recording_from_buttons(data)
                 with self.lock:
                     self.latest_input = data
@@ -347,8 +305,6 @@ class JoystickNode(Node):
 
         if data is None:
             return
-
-        self.sync_recording_state()
 
         throttle_axis = self.deadzone(
             self.clamp(data.analog_stick_left.y),
@@ -383,6 +339,7 @@ class JoystickNode(Node):
         msg.accel_ratio = float(self.accel_ratio)
         msg.e_stop_en = bool(self.e_stop_latched)
         msg.is_recording = bool(self.is_recording)
+        msg.engage = bool(self.engage_latched)
         self.joystick_pub.publish(msg)
 
     def debug_timer_callback(self):
@@ -405,7 +362,6 @@ class JoystickNode(Node):
 
     def destroy_node(self):
         self.running = False
-        self.stop_recording()
         reader_thread = getattr(self, 'reader_thread', None)
         if reader_thread is not None and reader_thread.is_alive():
             reader_thread.join(timeout=0.5)

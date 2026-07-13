@@ -121,15 +121,17 @@ OpenCV 기반 자율주행은 D-Racer Kit에서 카메라 영상처리와 차량
 | Package | Description |
 |---|---|
 | `camera` | 카메라 이미지 publish |
-| `control` | 차량 throttle / steering 제어 |
+| `perception` | 차선 인지 (lane detection) → `/lane/state` |
+| `control` | 제어 로직 (LaneState → `/control`) |
+| `actuator` | throttle / steering 서보 구동 |
 | `joystick` | 조이스틱 입력 처리 및 수동주행 |
-| `monitor` | 웹 기반 상태 모니터링 |
+| `recorder` | 주행 영상(mp4) + 로그(csv) 기록 |
+| `monitor` | 웹 기반 상태 모니터 + 라이브뷰 (:5000) |
 | `battery` | 배터리 상태 publish |
-| `opencv` | OpenCV 기반 영상처리 테스트 |
+| `dracer_core` | 순수(ROS 무관) 인지·제어 코어 (`perception_core`·`control_core`) |
+| `dracer_msgs` | custom messages (LaneState·Control·Joystick·Battery) |
+| `dracer_bringup` | 런치 파일 (calibrate·record·perceive·drive) |
 | `topst_utils` | D3-G 및 하드웨어 제어 유틸리티 |
-| `battery_msgs` | 배터리 custom message |
-| `control_msgs` | 제어 custom message |
-| `joystick_msgs` | 조이스틱 custom message |
 
 <br>
 
@@ -157,17 +159,19 @@ OpenCV 기반 자율주행은 D-Racer Kit에서 카메라 영상처리와 차량
 D-Racer-Kit/
 ├── src/
 │   ├── camera/
+│   ├── perception/
 │   ├── control/
+│   ├── actuator/
 │   ├── joystick/
+│   ├── recorder/
 │   ├── monitor/
-│   ├── opencv/
 │   ├── battery/
-│   ├── topst_utils/
-│   ├── battery_msgs/
-│   ├── control_msgs/
-│   └── joystick_msgs/
+│   ├── dracer_core/
+│   ├── dracer_msgs/
+│   ├── dracer_bringup/
+│   ├── config/
+│   └── topst_utils/
 ├── docs/
-├── bagfile/
 ├── README.md
 └── LICENSE
 ```

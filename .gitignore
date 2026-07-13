@@ -8,11 +8,33 @@ CLAUDE.local.md
 # Python
 **/__pycache__/
 *.py[cod]
+*.egg-info/
+*.egg
 
-# ROS2 build outputs
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# ROS2 build outputs (repo root and D-Racer-Kit/)
 D-Racer-Kit/build/
 D-Racer-Kit/install/
 D-Racer-Kit/log/
+build/
+install/
+log/
+
+# Execution results & recordings (never upload, any directory)
+*.mp4
+*.db3
+*.db3-wal
+*.db3-shm
+D-Racer-Kit/bagfile/
+/recorder/           # 녹화 산출물(panel/raw/csv). 기본은 $HOME/recorder — 레포에 둘 때만 해당.
+                     # 주의: `recorder/`(슬래시 없이)로 쓰면 소스 패키지 src/recorder 까지 무시된다
+# 주행/캘리브 세션 데이터 (mp4 + csv + png). 용량이 커서 git 이 아니라 scp 로 옮긴다.
+offline/rslt/
+offline/calib/
 
 # Local training outputs
 runs/

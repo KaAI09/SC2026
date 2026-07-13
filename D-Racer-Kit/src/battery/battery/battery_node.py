@@ -3,7 +3,7 @@ from smbus2 import SMBus
 import rclpy
 from rclpy.node import Node
 
-from battery_msgs.msg import Battery
+from dracer_msgs.msg import Battery
 from topst_utils.ina219 import INA219, INA_ADDR, I2C_BUS
 
 

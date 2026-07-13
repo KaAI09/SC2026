@@ -1,23 +1,24 @@
-# Camera configuration
 USB_CAM: true
 MIPI_CAM: false
 USB_CAM_DEVICE: /dev/video1
 IMAGE_WIDTH: 320
-IMAGE_HEIGHT: 160
+# 4:3. The 640x480 calibration rescales to it exactly, and it keeps ~1.5x the vertical
+# ground resolution of the old 320x160 (far-field 8cm = 10.4 rows vs 6.9). Lane tape width
+# is set by fx and is IDENTICAL either way, so 160 cost vertical detail for nothing that
+# mattered. BEV warp / sliding window / tracker costs do not change with this at all (they
+# run on the fixed 232x207 BEV); only imdecode + the colour test grow, and the colour test
+# is now cropped to the ground band. perception rescales the model to whatever arrives
+# (CameraModel.match), so this is a safe A/B knob — revert to 160 with no code change.
+IMAGE_HEIGHT: 240
 ROI_TOP: 50
 ROI_LEFT: 0
-
-# Vehicle control parameters
-STEER_TRIM: 0.10000000000000003
-
-# Web server configuration
+STEER_TRIM: 0.30000000000000004
 WEB_HOST: 0.0.0.0
 WEB_PORT: 5000
 BATTERY_TOPIC: /battery_status
 IMAGE_TOPIC: /camera/image/compressed
-CONTROL_TOPIC: /control
-JOYSTICK_TOPIC: /joystick
 STORAGE_PATH: /
 IMAGE_DISPLAY_WIDTH: 640
 IMAGE_DISPLAY_HEIGHT: 480
-OPENCV_DEBUG_MODE : true
+# joystick_node 가 L1/R1 로 조정해 여기에 써넣는다. 0711 성공 주행 시 보드 값.
+ACCEL_RATIO: 0.215
