@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+
+# Claude Code local settings
+.claude/settings.local.json
+CLAUDE.local.md
+
+# Python
+**/__pycache__/
+*.py[cod]
+
+# ROS2 build outputs
+D-Racer-Kit/build/
+D-Racer-Kit/install/
+D-Racer-Kit/log/
+
+# Local training outputs
+runs/
+artifacts/
+datasets/
