@@ -1,0 +1,42 @@
+# 2026 트랙 주행 프로파일 — 오프라인 ↔ 온라인 **유일 계약**.
+#
+# 키는 dracer_core.perception_core.Cfg (perception) 와 control_core.CtrlCfg (control) 에
+# 1:1 대응한다. 모르는 키는 무시된다. 손으로 편집하고, 실차에서는 `ros2 param set` 으로
+# 라이브 조정한다 (Tracker/EMA 상태는 보존된다).
+name: track
+
+perception:
+  colors: [white, yellow]   # 흰+노랑 마스크를 OR 로 합친다
+  yellow_h_lo: 18           # 0714 실측: 테이프 H 18~27. ⚠ 하한에 마진이 없다 —
+  yellow_h_hi: 36           #   조명이 어두워져 노랑이 죽으면 14 로 내려라
+  yellow_s_min: 65          #   (실측 S p05 = 85)
+  yellow_v_min: 100         #   (실측 V p05 = 133)
+  lane_width_cm: 34.8       # 실측. 서로 다른 두 캘리브가 독립적으로 34.76 / 34.78 을 냈다
+
+control:
+  controller: PD            # PD | PID. 모르는 이름은 예외를 던진다 (조용한 폴백 없음)
+
+  # 조향 스케일은 서보 실측이 정한다: 조향각(u) = 25·u 도, u=±1.0 이 정확히 ±25도.
+  # 트림이 서보 중립(SERVO_CENTER_US)에 있으므로 u=0 이 곧 직진이고 전 구간이 선형이다.
+  #
+  # kp 1.0 / kd 0.13 — 07142315 주행 측정에 근거한 상향 (옛 0.75 / 0.1).
+  #   그 주행에서 직선은 완벽했으나(횡오차 0.2cm) 곡선에서 벗어났다(p95 23cm, 코리도어
+  #   반폭 17.5cm). PD 는 일정 곡률의 코너에서 e_ss = u_필요/kp 만큼의 오차를 반드시
+  #   남기고, 조향은 포화되지 않았다(|steer| p90 0.65) — 즉 올릴 여유가 있었다.
+  #   진동하면 낮추고, 곡선에서 여전히 벗어나면 올린다. |steer| 가 1.0 에 닿으면 거기가 한계다.
+  kp: 1.0
+  kd: 0.13
+  center_target: 0.0
+  steer_max: 1.0
+  steer_sign: 1.0           # 조향 방향이 반대면 -1.0
+
+  # 초당 조향 변화 상한 (프레임당이 아니다 — 그러면 차의 회전 속도가 그날의 FPS 가 된다).
+  slew_rate_per_sec: 7.5
+
+  throttle_base: 0.23
+  throttle_min: 0.22
+  conf_gate: 0.4            # confidence 가 이 미만이면 직전 조향을 유지한다
+
+  # state=OUTLIER 일 때의 스로틀. OUTLIER 는 "지금 주는 ema 를 믿지 마라" 는 뜻이고,
+  # 코리도어 전환 직후엔 부호까지 반대일 수 있다. 0.0 = 타력주행.
+  throttle_outlier: 0.0

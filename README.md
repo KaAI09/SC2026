@@ -98,7 +98,7 @@ battery_node ──/battery_status──► monitor
 |---|---|
 | `vehicle_config.yaml` | **D3-G 로컬 캘리브레이션** — `SERVO_*`(조향 서보 실측), `ACCEL_RATIO`, 카메라 장치·해상도. `git reset --hard` 가 덮어쓴다 |
 | `camera.yaml` | 렌즈 K/D + 지면 호모그래피 H + BEV 범위. `offline/calibrate.py` 산출 |
-| `profiles/track2025.yaml` | 인지·제어 파라미터 = **오프라인↔온라인 유일 계약**. 손으로 편집한다 |
+| `profiles/track.yaml` | 인지·제어 파라미터 = **오프라인↔온라인 유일 계약**. 손으로 편집한다 |
 
 **카메라 마운트를 움직이면 `camera.yaml` 의 H 가 무효가 된다.** 지면 사진 한 장으로 다시
 뽑아야 한다 (K/D 는 살아남는다).

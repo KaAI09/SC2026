@@ -6,7 +6,7 @@ The online perception_node and driving_node load this one file instead of
 carrying dozens of separately-tuned ROS parameters, so "what offline picked" is
 exactly "what the car runs".
 
-    profile = load_profile('profiles/track2025.yaml')
+    profile = load_profile('profiles/track.yaml')
     p_over = section(profile, 'perception')   # {mode, roi_top_frac, ...}
     c_over = section(profile, 'control')       # {controller, kp, kd, ...}
 

@@ -22,7 +22,7 @@ B 에서는 코리도어가 2개인데 A 에서는 1개 이하인 프레임 = **
 
     .venv/bin/python offline/color_gate_probe.py offline/rslt/<세션>/raw/*.mp4 \
         --camera D-Racer-Kit/src/config/camera.yaml \
-        --profile D-Racer-Kit/src/config/profiles/track2025.yaml
+        --profile D-Racer-Kit/src/config/profiles/track.yaml
 """
 import argparse
 import csv

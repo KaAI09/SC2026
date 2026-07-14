@@ -1,41 +1,33 @@
-USB_CAM: true
+# D3-G 로컬 하드웨어 설정. **보드마다 다르다** — `git reset --hard` 가 덮어쓰므로
+# SERVO_* 와 ACCEL_RATIO 는 동기화 전에 적어둬라.
+
+# --- 카메라 -----------------------------------------------------------------
+USB_CAM: true                 # USB / MIPI 중 정확히 하나만 true
 MIPI_CAM: false
-USB_CAM_DEVICE: /dev/video1
-IMAGE_WIDTH: 320
-# 4:3. The 640x480 calibration rescales to it exactly, and it keeps ~1.5x the vertical
-# ground resolution of the old 320x160 (far-field 8cm = 10.4 rows vs 6.9). Lane tape width
-# is set by fx and is IDENTICAL either way, so 160 cost vertical detail for nothing that
-# mattered. BEV warp / sliding window / tracker costs do not change with this at all (they
-# run on the fixed 232x207 BEV); only imdecode + the colour test grow, and the colour test
-# is now cropped to the ground band. perception rescales the model to whatever arrives
-# (CameraModel.match), so this is a safe A/B knob — revert to 160 with no code change.
-IMAGE_HEIGHT: 240
-ROI_TOP: 50
+USB_CAM_DEVICE: /dev/video1   # v4l2 장치 경로
+IMAGE_WIDTH: 320              # 카메라가 발행하는 해상도. perception 이 camera.yaml 을 여기에
+IMAGE_HEIGHT: 240             #   맞춰 rescale 한다 — 캘리브 해상도와 달라도 된다
+ROI_TOP: 50                   # (미사용 — BEV LUT 가 캘리브레이션된 크롭을 대신한다)
 ROI_LEFT: 0
-# 조향 서보 — scripts/servo_sweep.py 실측 (STEER_TRIM 을 대체한다).
-#
-# 실측 (실차 직진으로 확인 — **바퀴에 조향이 전달되는 범위**):
-#     center 1650us = 0도,   1350us = 우 25도,   1950us = 좌 25도   (300us = 25도)
-#     서보 자체는 1250~2050us 까지 무리 없이 돈다 (그러나 바퀴는 더 안 돈다)
-#
-# 옛 설정(center 1500 / span 500 / actuator 가 clamp(u + 0.3))이 실제로 내던 조향각:
-#     u =  0.0  -> 1650us ->   0.00도    직진이었다 — STEER_TRIM 0.3 은 맞았다
-#     u = +0.6  -> 1950us -> +25.00도    여기서 이미 최대
-#     u = +0.7  -> 2000us -> +25.00도    포화 (조향각이 더 안 늘어난다)
-#   좌우는 대칭이었다. 문제는 **포화**다: steer_max 0.7 인데 u=±0.6 에서 바퀴가 끝까지 돌아,
-#   명령 범위의 14% 가 조향각을 전혀 바꾸지 못했다. 제어기는 더 달라는데 바퀴는 멈춰 있고,
-#   제어기는 그것을 알 길이 없다. 그리고 트림이 명령에 얹혀 있으니 steer_max 를 1-|trim| 로
-#   깎아야 했다 — 그것이 0.7 의 정체다.
-SERVO_CENTER_US: 1650   # 바퀴가 직진하는 펄스. 조이스틱 Y/B 가 조정해 여기 써넣는다.
-SERVO_SPAN_US: 300      # u=±1.0 -> ±25도. **조향이 일어나는 반경**이지 서보 한계가 아니다.
-SERVO_MIN_US: 1250      # 서보 하드 clip. 조향 반경(1350~1950)보다 넓다 = 트림 조정 여유.
-SERVO_MAX_US: 2050
+
+# --- 조향 서보 (실측: scripts/servo_sweep.py + 실차 직진 확인) ----------------
+# center 1650us = 0도,  1350us = 우 25도,  1950us = 좌 25도   (300us = 25도)
+SERVO_CENTER_US: 1650   # 바퀴가 직진하는 펄스. 조이스틱 Y/B 가 ±10us 조정해 여기 써넣는다
+SERVO_SPAN_US: 300      # u=±1.0 이 내는 펄스 폭 = ±25도. **조향 반경**이지 서보 한계가 아니다
+SERVO_MIN_US: 1250      # 서보 하드 clip 하한 (조향 반경보다 넓다 = 트림 조정 여유)
+SERVO_MAX_US: 2050      # 서보 하드 clip 상한
+
+# --- 구동 -------------------------------------------------------------------
+ACCEL_RATIO: 0.215      # 조이스틱 스로틀 배율. L1/R1 이 조정해 여기 써넣는다.
+                        # ⚠ 자율주행과 무관하다 (자율 스로틀은 프로파일의 throttle_base)
+
+# --- 모니터 (웹 :5000) -------------------------------------------------------
 WEB_HOST: 0.0.0.0
 WEB_PORT: 5000
-BATTERY_TOPIC: /battery_status
+STORAGE_PATH: /               # 디스크 사용량을 표시할 마운트 지점
+IMAGE_DISPLAY_WIDTH: 320      # 카메라 미연결 시 placeholder SVG 크기. **전송량과 무관하다** —
+IMAGE_DISPLAY_HEIGHT: 240     #   대역폭 노브는 camera_node 의 jpeg_quality 다
+
+# --- 토픽 -------------------------------------------------------------------
 IMAGE_TOPIC: /camera/image/compressed
-STORAGE_PATH: /
-IMAGE_DISPLAY_WIDTH: 640
-IMAGE_DISPLAY_HEIGHT: 480
-# joystick_node 가 L1/R1 로 조정해 여기에 써넣는다. 0711 성공 주행 시 보드 값.
-ACCEL_RATIO: 0.215
+BATTERY_TOPIC: /battery_status

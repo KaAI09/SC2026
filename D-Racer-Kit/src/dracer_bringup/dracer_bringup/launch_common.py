@@ -36,8 +36,8 @@ def vehicle_config_path():
 
 def default_profile_path():
     return find_config(
-        'src/config/profiles/track2025.yaml',
-        '/home/topst/SC2026/D-Racer-Kit/src/config/profiles/track2025.yaml')
+        'src/config/profiles/track.yaml',
+        '/home/topst/SC2026/D-Racer-Kit/src/config/profiles/track.yaml')
 
 
 def default_camera_path():

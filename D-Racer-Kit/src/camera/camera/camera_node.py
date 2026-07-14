@@ -29,7 +29,14 @@ class CameraNode(Node):
         self.declare_parameter('usb_camera_device', '/dev/video1')
         self.declare_parameter('mipi_camera_device', '/dev/video0')
         self.declare_parameter('flip_method', 'rotate-180')
-        self.declare_parameter('jpeg_quality', 90)
+        # 70, not 90. This is the ONLY real bandwidth knob on the car -- everything the
+        # monitor and the recorder carry passes through it. Measured on a real drive frame
+        # (320x240): q90 = 16.4 KB/frame = 3.8 Mbps at 30Hz; q70 = 9.3 KB = 2.2 Mbps. That
+        # is 43% off the wire for a difference no one can see at this resolution, and the
+        # MJPEG stream does not shed frames a congested venue Wi-Fi cannot carry -- they
+        # queue, so the lag GROWS instead of levelling off.
+        # (IMAGE_DISPLAY_* in vehicle_config is NOT this. It sizes a placeholder SVG.)
+        self.declare_parameter('jpeg_quality', 70)
         # OFF. This logged one line PER FRAME -- 30 a second, forever, through the launch
         # pipe -- to say a number ("Published frame: 4211 bytes") that no one reads and
         # `ros2 topic hz` answers better. It is the only node that logs on the hot path.
