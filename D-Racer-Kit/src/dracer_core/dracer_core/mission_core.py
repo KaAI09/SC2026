@@ -52,42 +52,49 @@ class MissionCfg:
     aruco_error_correction: float = 0.8
     # NOTE: how long the MARK stop is HELD is NOT here. It belongs to MissionGate (below),
     # which lives in control_node -- `mission_mark_hold_s`. MissionCfg is the DETECTOR's
-    # config: mission_node turns every field in it into a ROS param, so a knob parked here
+    # config: perception_node turns every field in it into a ROS param, so a knob parked here
     # that the detector never reads would be a knob the venue can turn with no effect.
 
     # --- traffic light (cls 0 GREEN, 1 RED), HSV ---
-    # ⚠⚠ THIS DETECTOR DOES NOT WORK AT THE 0714 VENUE, AND NO SETTING BELOW FIXES IT.
-    # It is left ON because nothing consumes it (MissionGate is not wired to control_node),
-    # and turned into a lie the moment something does. Read this before wiring C2.
+    # ⚠ RED WAS BROKEN AT THE 0714 VENUE, AND THE FIX IS NOT A THRESHOLD. IT IS A NEW AXIS.
     #
-    # The saturation gate rests on a claim -- "an LED is the purest colour in the scene;
-    # paint and cloth reflect broadband light and cannot reach sat 205+". At this venue the
-    # claim is FALSE. The hall is full of red, at LED purity, behind the track.
+    # The old note here said the detector could not be fixed in this file, and on the evidence
+    # it had, it was right. Saturation, area and frame position ALL overlap between the lamp
+    # and the hall behind the track. Measured, 4744 frames: real lamp sat 245..255 vs
+    # background 230..255; area 80..900 vs 64..400; y 0.07..0.18 vs 0.02..0.21. Every axis.
     #
-    # Measured, 4,744 frames, 12 clips (one of which -- 082431 -- contains a REAL red lamp
-    # held up in front of the car, confirmed by eye at conf 1.00):
+    # But it was measuring the wrong thing, and so was the detector. Two labelled clips
+    # settled it (data/mission/real/red, 082431 = lamps LIT, 082620 = same lamps UNLIT):
     #
-    #                      real RED lamp (n=21)     background false pos (n=1344)
-    #   saturation         245 .. 255               230 .. 255        <- overlap
-    #   area (px)           80 .. 900                64 .. 400        <- overlap
-    #   frame height y     0.07 .. 0.18             0.02 .. 0.21      <- overlap
+    #   THE DETECTOR NEVER FOUND THE LAMP AT ALL. Every "RED" it reported was background.
+    #   The lit lamp was rejected by `red_min_circ` -- its circularity is 0.27 against a 0.50
+    #   gate. Because it is not a disc. IT IS A DONUT.
     #
-    # EVERY axis overlaps. Not "mostly separable with a careful threshold" -- overlapping
-    # ranges on all three. `light_roi_top = 0.20` was tried: it kills 451/451 false REDs
-    # and ALSO kills 21/21 of the real lamp, because the real lamp is up there too. A gate
-    # that removes the thing it exists to find is not a gate.
+    # A lit LED at this exposure BLOWS OUT ITS OWN CORE. The centre goes white (val 190..255,
+    # sat ~103), which is not red, so the red mask has a HOLE in it and the blob is a ring.
+    # Nothing that merely REFLECTS red can do that -- not a shirt, not paint, not the lamp's
+    # own unlit lens. It is the one thing only an emitter does.
     #
-    # So the fix is not in this file. It is one of:
-    #   (a) record the ACTUAL installed light from the ACTUAL stop-line distance -- these
-    #       clips have a hand-held lamp at arm's length, which is not the geometry the car
-    #       will face, and the real one may well separate cleanly on area or position;
-    #   (b) aim the camera lower so the crowd is not in frame at all (costs a recalibration);
-    #   (c) require the lamp to sit inside the traffic-light HOUSING (shape/context), which
-    #       this detector deliberately does not do -- see the note below on why the ring
-    #       gate was removed, and note that reason was measured on a DIFFERENT venue.
+    #   red blob                     n      hole (non-red px inside the contour)
+    #   LIT lamp                   315      36 px, val 190, sat 103
+    #   background, lit clip        47       0
+    #   UNLIT lamp                   6       0
+    #   background, unlit clip     790       0
+    #   background, 2 drive clips 2205       0
     #
-    # Until then: keep `use_mission` off the control path. A car that stops for a
-    # spectator's shirt on 95% of frames does not finish a lap.
+    # So: drop the circularity gate (it was deleting the lamp), and require the BRIGHT HOLLOW
+    # CORE instead. Frame-level, on the labelled clips:
+    #
+    #   LIT red lamp        212 / 368   (58%)  -> confirms easily at 3-of-5
+    #   UNLIT red lamp        0 / 578          -> zero
+    #   green drive clip      0 / 1554         -> zero
+    #
+    # Wide plateau: area 60..100, core val 200..215, core sat 100..140, core 4..12 px all give
+    # the same answer. This is not a threshold balanced on a knife edge.
+    #
+    # GREEN does NOT do this -- its core blows out on 2.7% of frames, so it stays on the
+    # circularity gate it already passes (conf 1.0 on the installed lamp). One lamp, two
+    # physics: the red LED is simply brighter on this sensor.
     light_roi_top: float = 0.0
     light_roi_bot: float = 1.0            # full frame; circularity rejects the lane. tune on real camera
     # COLOUR + SHAPE. Nothing else.
@@ -112,8 +119,34 @@ class MissionCfg:
     # A brightness gate tuned on one inverts on the other. Saturation does not move.
     green_h: tuple = (50, 85)
     green_s_min: int = 190                # LED is monochromatic; background green is 48-63
-    green_v_min: int = 30                 # noise floor only -- brightness does NOT identify a lamp
-    green_min_circ: float = 0.50          # lamp 0.57-0.81 vs background 0.20
+    green_v_min: int = 30                 # noise floor only. The MEDIAN brightness of the blob
+                                          # really does not separate -- measured at the 0714
+                                          # venue, lamp 62..106 vs a green T-shirt 50..65. The
+                                          # note above is right about that and stays.
+    green_min_circ: float = 0.0           # OFF. Same mistake as red, and worse: measured at the
+                                          # venue the lamp is circ 0.27..0.33 and the T-SHIRT is
+                                          # 0.34..0.36 -- the background is ROUNDER than the
+                                          # lamp. A 0.50 gate was rejecting the lamp and passing
+                                          # the crowd. Roundness never separated these; it only
+                                          # looked like it did on a venue with no crowd.
+    green_v_peak: int = 180               # ★ THE GATE. The BRIGHTEST pixel in the blob, not the
+                                          # median. An LED has a hot centre; a reflector cannot
+                                          # be brighter than the light falling on it. This is the
+                                          # same fact as red's blown-out core -- red is simply
+                                          # bright enough to clip to white, green stops at a
+                                          # hotspot. One physics, two symptoms.
+                                          #
+                                          # Measured (data/mission/real):
+                                          #   LIT green lamp        Vmax 182..204
+                                          #   green T-shirt          Vmax 96..120
+                                          #   unlit lamp / tape / track  below both
+                                          #
+                                          # Frame level, gate at 180:
+                                          #   LIT green   60/368  and  38/1554   -> confirms
+                                          #   green shirt  0/349  and   0/361
+                                          #   unlit        0/578,  drive  0/1333
+                                          #   -> 0 false positives in 2621 frames. 180..200 all
+                                          #      give the same answer. 0 disables.
     red_h_lo: tuple = (0, 10)             # the lit red LED is hue 2-6
     red_h_hi: tuple = (165, 180)          # red straddles the hue wrap; it needs two bands
     # 205, not 190: at 190 a BRIGHT RED BACKGROUND OBJECT (sat 213-217, val 138-140) sitting
@@ -124,9 +157,23 @@ class MissionCfg:
     # lamp on an iPad screen is val 190, and a venue LED might be too.
     red_s_min: int = 205
     red_v_min: int = 30                   # noise floor only
-    red_min_circ: float = 0.50            # lamp 0.54-0.71 vs background 0.26
+    red_min_circ: float = 0.0             # OFF -- see the header. 0.50 was DELETING THE LAMP:
+                                          # a blown-out LED is a DONUT (measured circ 0.27), and
+                                          # every "RED" this detector ever reported at the venue
+                                          # was background that happened to be rounder than the
+                                          # thing it was looking for. The hollow core replaces it
+                                          # and does the job the roundness gate was meant to do.
+    # THE BRIGHT HOLLOW CORE -- what tells an EMITTER from a REFLECTOR, and the only axis that
+    # does. The lamp's centre saturates white, drops out of the red mask, and leaves a hole.
+    # Measured (data/mission/real/red): LIT lamp 36px of hole at val 190 / sat 103; UNLIT lamp,
+    # crowd, clothing, lane tape -- 3042 blobs across 4 clips -- ZERO. Set red_core_min_px = 0
+    # to disable (and get the old behaviour, i.e. background).
+    red_core_v_min: int = 215             # the core is BLOWN OUT, not merely bright
+    red_core_s_max: int = 140             # ...and therefore WHITE, not red
+    red_core_min_px: int = 12             # how much of it. 4..12 all measure the same.
     light_min_area: int = 35              # the LED is small on a 320-wide frame
-    red_min_area: int = 40
+    red_min_area: int = 100               # 40 -> 100. With circularity gone, area is what keeps
+                                          # the speckle out; the lit lamp runs 100..550.
     light_max_area_frac: float = 0.05     # reject blobs > 5% of frame (e.g. a red floor)
     # NOT here, and deliberately: a "reject blobs touching the frame edge" rule. It looks
     # principled (a clipped blob is a fragment, so its area and circularity are measured on
@@ -147,7 +194,28 @@ class MissionCfg:
     blue_s_min: int = 80
     blue_v_min: int = 50
     sign_min_area: int = 250
-    sign_min_circ: float = 0.55
+    sign_min_circ: float = 0.70            # 0.55 -> 0.70. THE TRACK MAT IS BLUE.
+                                           #
+                                           # At the 0714 venue the car drives on a blue mat, and
+                                           # a patch of it -- 7935 px, circularity 0.57 -- walked
+                                           # straight through a 0.55 gate. The white lane lines
+                                           # crossing it play the part of the arrow's hole, so
+                                           # `_arrow_direction` dutifully read a LEFT off the
+                                           # floor and published it. Measured on the drive clips:
+                                           # 83 phantom signs, and TWO OF THEM POINTED THE WRONG
+                                           # WAY (R2 in a clip whose only sign is LEFT).
+                                           #
+                                           # Area cannot fix it -- the mat runs 758..25920 px and
+                                           # a real sign 1372..11422, straight through each other.
+                                           # Circularity can: a printed disc IS round, a puddle of
+                                           # mat is not.
+                                           #
+                                           #   real sign   circ 0.71..0.95
+                                           #   blue mat    circ 0.55..0.69
+                                           #
+                                           # 0.70 keeps 283/287 and 202/204 of the real sign
+                                           # frames and takes the mat to ZERO. 0.80 starts eating
+                                           # the sign (242/287).
     arrow_min_px: int = 20               # min hole px to read a direction (else skip)
     arrow_margin: float = 0.08           # dead zone for the arrow's lean (upper-half centre
                                          # minus lower-half centre, over width). Real signs
@@ -278,8 +346,52 @@ def blob_v(vchan, cnt):
     return float(np.median(px)) if px.size else 0.0
 
 
-def _light_best(mask, cfg, min_area, max_area, min_circ, min_v, vchan):
-    """Largest blob passing area + circularity + brightness. Returns (area, cnt, circ)."""
+def _hollow_core(cnt, mask, hsv, cfg):
+    """Pixels inside this blob's outline that are NOT the blob's colour, and are BLOWN OUT.
+
+    An LED bright enough to matter overexposes its own centre: the core goes white, so it
+    falls out of the colour mask and the blob comes back as a RING. A shirt, a painted board,
+    the lamp's own unlit lens -- anything that merely REFLECTS -- cannot do this, because it
+    can never be brighter than the light falling on it.
+
+    So this is not a shape heuristic dressed up. It is the one measurable difference between
+    an emitter and a reflector, and it is the only axis at the 0714 venue on which the lamp
+    and the hall do not overlap (see MissionCfg's header for the numbers).
+    """
+    filled = np.zeros(mask.shape, np.uint8)
+    cv2.drawContours(filled, [cnt], -1, 255, -1)
+    hole = (filled > 0) & (mask == 0)
+    if not hole.any():
+        return 0
+    return int(((hsv[:, :, 2] >= cfg.red_core_v_min) &
+                (hsv[:, :, 1] <= cfg.red_core_s_max) & hole).sum())
+
+
+def blob_v_peak(vchan, cnt):
+    """BRIGHTEST pixel in the blob. An emitter has a hot centre; a reflector cannot be brighter
+    than the light falling on it. The median (`blob_v`) does not see this -- a lamp is small and
+    its rim is dim, so the median lands right on top of a T-shirt's. The peak does."""
+    m = np.zeros(vchan.shape, np.uint8)
+    cv2.drawContours(m, [cnt], -1, 255, -1)
+    px = vchan[m > 0]
+    return float(px.max()) if px.size else 0.0
+
+
+def _light_best(mask, cfg, min_area, max_area, min_circ, min_v, vchan, hsv=None,
+                core=False, v_peak=0):
+    """Largest blob passing area + circularity + brightness (+ the EMITTER test). -> (area, cnt, circ).
+
+    THE EMITTER TEST is what makes this detector work at a venue with a crowd behind the track,
+    and it comes in two flavours because the two LEDs are not equally bright on this sensor:
+
+        red    `core=True`  -- the centre clips to WHITE and drops out of the red mask, so the
+                              blob is a DONUT. Nothing that reflects can do that.
+        green  `v_peak`     -- not bright enough to clip, but still has a hot centre.
+
+    Same fact both times: a lamp EMITS. `min_circ` used to stand in for this and it never
+    worked -- at the venue the red lamp is circ 0.27 (a donut) and the green T-shirt is 0.36.
+    It was rejecting the lamps and passing the crowd.
+    """
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     best = None
     for cnt in cnts:
@@ -287,9 +399,14 @@ def _light_best(mask, cfg, min_area, max_area, min_circ, min_v, vchan):
         if area < min_area or area > max_area:
             continue
         circ = _circularity(cnt)
-        if circ < min_circ:
+        if min_circ > 0 and circ < min_circ:
             continue
         if blob_v(vchan, cnt) < min_v:
+            continue
+        if core and cfg.red_core_min_px > 0:
+            if _hollow_core(cnt, mask, hsv, cfg) < cfg.red_core_min_px:
+                continue
+        if v_peak > 0 and blob_v_peak(vchan, cnt) < v_peak:
             continue
         if best is None or area > best[0]:
             best = (area, cnt, circ)
@@ -301,7 +418,10 @@ def _light_emit(cls_id, best, cfg, min_area, min_circ, y0):
     x, y, bw, bh = cv2.boundingRect(cnt)
     # a blob passing colour + shape + brightness IS a light; strength from area + roundness
     area_f = min(1.0, area / (min_area * 2.0))
-    conf = min(1.0, 0.45 + 0.35 * area_f + 0.20 * min(1.0, circ / max(min_circ, 1e-6)))
+    # min_circ = 0 means the roundness gate is off (red: the lamp is a donut). Do not let the
+    # confidence formula divide by it and hand back 1.0 for every blob -- score on area alone.
+    circ_f = min(1.0, circ / min_circ) if min_circ > 0 else 1.0
+    conf = min(1.0, 0.45 + 0.35 * area_f + 0.20 * circ_f)
     return (cls_id, float(conf), (int(x), int(y0 + y), int(bw), int(bh)))
 
 
@@ -318,9 +438,9 @@ def detect_light(bgr, cfg, hsv=None):
     v = hsv[:, :, 2]
     max_area = cfg.light_max_area_frac * h * w
     best_red = _light_best(red, cfg, cfg.red_min_area, max_area,
-                           cfg.red_min_circ, cfg.red_v_min, v)
+                           cfg.red_min_circ, cfg.red_v_min, v, hsv=hsv, core=True)
     best_green = _light_best(green, cfg, cfg.light_min_area, max_area,
-                             cfg.green_min_circ, cfg.green_v_min, v)
+                             cfg.green_min_circ, cfg.green_v_min, v, v_peak=cfg.green_v_peak)
     # A traffic light shows ONE colour at a time. If both somehow survive, take the SAFE
     # one: red. A false stop costs seconds; a false go runs the light.
     if best_red:
@@ -443,7 +563,7 @@ def light_candidates(bgr, cfg, top_k=4):
 
 
 def sign_candidates(bgr, cfg, top_k=4):
-    """LOOSE blue-sign blob scan for OPTIONAL venue tuning (opt-in via mission_node
+    """LOOSE blue-sign blob scan for OPTIONAL venue tuning (opt-in via perception_node
     log_signs:=true). A sign is a large solid PRINTED blue disc (a reflector, not an
     emitter), so brightness means nothing here -- this just reports its HSV, size and
     roundness, the same CSV schema as the lamps.
