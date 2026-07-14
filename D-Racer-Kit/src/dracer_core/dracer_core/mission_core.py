@@ -56,8 +56,38 @@ class MissionCfg:
     # that the detector never reads would be a knob the venue can turn with no effect.
 
     # --- traffic light (cls 0 GREEN, 1 RED), HSV ---
-    # the light sits high in the frame; restrict search to the top band to avoid
-    # the orange lane tape (orange hue overlaps red). Tune with real footage.
+    # ⚠⚠ THIS DETECTOR DOES NOT WORK AT THE 0714 VENUE, AND NO SETTING BELOW FIXES IT.
+    # It is left ON because nothing consumes it (MissionGate is not wired to control_node),
+    # and turned into a lie the moment something does. Read this before wiring C2.
+    #
+    # The saturation gate rests on a claim -- "an LED is the purest colour in the scene;
+    # paint and cloth reflect broadband light and cannot reach sat 205+". At this venue the
+    # claim is FALSE. The hall is full of red, at LED purity, behind the track.
+    #
+    # Measured, 4,744 frames, 12 clips (one of which -- 082431 -- contains a REAL red lamp
+    # held up in front of the car, confirmed by eye at conf 1.00):
+    #
+    #                      real RED lamp (n=21)     background false pos (n=1344)
+    #   saturation         245 .. 255               230 .. 255        <- overlap
+    #   area (px)           80 .. 900                64 .. 400        <- overlap
+    #   frame height y     0.07 .. 0.18             0.02 .. 0.21      <- overlap
+    #
+    # EVERY axis overlaps. Not "mostly separable with a careful threshold" -- overlapping
+    # ranges on all three. `light_roi_top = 0.20` was tried: it kills 451/451 false REDs
+    # and ALSO kills 21/21 of the real lamp, because the real lamp is up there too. A gate
+    # that removes the thing it exists to find is not a gate.
+    #
+    # So the fix is not in this file. It is one of:
+    #   (a) record the ACTUAL installed light from the ACTUAL stop-line distance -- these
+    #       clips have a hand-held lamp at arm's length, which is not the geometry the car
+    #       will face, and the real one may well separate cleanly on area or position;
+    #   (b) aim the camera lower so the crowd is not in frame at all (costs a recalibration);
+    #   (c) require the lamp to sit inside the traffic-light HOUSING (shape/context), which
+    #       this detector deliberately does not do -- see the note below on why the ring
+    #       gate was removed, and note that reason was measured on a DIFFERENT venue.
+    #
+    # Until then: keep `use_mission` off the control path. A car that stops for a
+    # spectator's shirt on 95% of frames does not finish a lap.
     light_roi_top: float = 0.0
     light_roi_bot: float = 1.0            # full frame; circularity rejects the lane. tune on real camera
     # COLOUR + SHAPE. Nothing else.
