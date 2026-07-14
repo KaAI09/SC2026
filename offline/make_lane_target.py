@@ -183,7 +183,7 @@ def build(a):
             'Park the car on the target, wheels straight, so the two lanes run straight',
             'away from the camera and BOTH are visible. The car must be in its normal',
             'driving state (battery in, tyres inflated) - camera height and pitch ARE H.',
-            'ros2 launch dracer_bringup record.launch.py    # START -> 2-3 s -> STOP']),
+            'ros2 launch dracer_bringup collect.launch.py   # START -> 2-3 s -> STOP']),
         ('3. CHECK (local)', [
             'scp the mp4, grab one frame, then:',
             '  .venv/bin/python offline/calibrate.py --check \\',

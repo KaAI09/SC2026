@@ -2,10 +2,18 @@
 
 `find_config()` locates repo config by walking parent dirs (works with
 `--symlink-install`; falls back to the D3-G default path otherwise).
-`base_nodes()` returns the nodes common to EVERY pipeline launch — camera,
-actuator, joystick, monitor, battery — so the launches stay DRY and consistent.
-Mode-specific nodes (perception / control / recorder) are added on top by each
-launch.
+
+The node helpers are SPLIT rather than bundled into one `base_nodes()`, because
+`lap` exists. A lap-time run has to be able to drop the monitor -- a Flask server
+that JPEG-streams a frame at camera rate -- WITHOUT dropping the joystick, which
+carries E-STOP. One bundle made every launch pay for every node, so the leanest
+launch was as heavy as the heaviest.
+
+  core_nodes()    camera + actuator + joystick. NEVER omit: the joystick is the
+                  E-STOP (X) / engage (A) / record (START) path, and the actuator
+                  is the only thing that reaches the servo.
+  monitor_node()  web dashboard (:5000). OPTIONAL, and the expensive one.
+  battery_node()  /battery_status. OPTIONAL, and nearly free.
 """
 from pathlib import Path
 
@@ -41,7 +49,7 @@ def default_camera_path():
 
 
 def default_record_dir():
-    """Recorder output root. Sessions land in <root>/{panel,raw,csv}/ (recorder_node).
+    """Recorder output root. Sessions land in <root>/{raw,csv}/ (recorder_node).
 
     NOT via find_config(): a repo-relative search for 'recorder' would resolve to the
     SOURCE PACKAGE `src/recorder/` and write recordings into the source tree. Recording
@@ -51,15 +59,15 @@ def default_record_dir():
     return str(Path.home() / 'recorder')
 
 
-def base_nodes(vehicle_config, *, calibration_mode, use_joystick_control, image_topic,
+def core_nodes(vehicle_config, *, calibration_mode, use_joystick_control,
                command_hz=30.0):
-    """Nodes common to every pipeline launch.
+    """The three nodes the car can neither move nor stop without.
 
     - camera    : publishes /camera/image/compressed
     - actuator  : /control -> servo (joystick mode when use_joystick_control)
-    - joystick  : /joystick (calibration_mode enables trim/accel edits)
-    - monitor   : web dashboard (:5000), streams `image_topic` low-latency
-    - battery   : /battery_status (feeds the monitor battery panel)
+    - joystick  : /joystick -- E-STOP (X), engage (A), record toggle (START).
+                  `calibration_mode` additionally enables the trim/accel EDITS
+                  (Y/B, L1/R1). Driving works either way; only the edits are gated.
 
     `command_hz` is a LAUNCH ARGUMENT (not baked in): it creates a timer at node
     construction, so it cannot be changed with `ros2 param set` on a running car.
@@ -85,10 +93,25 @@ def base_nodes(vehicle_config, *, calibration_mode, use_joystick_control, image_
              output='screen',
              parameters=[{'calibration_mode': calibration_mode,
                           'vehicle_config_file': vehicle_config}]),
-        Node(package='monitor', executable='monitor_node', name='monitor_node',
-             output='screen',
-             parameters=[{'vehicle_config_file': vehicle_config,
-                          'image_topic': image_topic}]),
-        Node(package='battery', executable='battery_node', name='battery_node',
-             output='screen'),
     ]
+
+
+def monitor_node(vehicle_config, image_topic):
+    """Web dashboard (:5000), streaming `image_topic`.
+
+    The cost is not the dashboard, it is what the SUBSCRIPTION switches on: perception
+    renders and JPEG-encodes its debug image only while something is listening
+    (`get_subscription_count() > 0`). Point this at the raw camera and that cost is
+    zero; point it at a debug topic and you have asked for it.
+    """
+    return Node(package='monitor', executable='monitor_node', name='monitor_node',
+                output='screen',
+                parameters=[{'vehicle_config_file': vehicle_config,
+                             'image_topic': image_topic}])
+
+
+def battery_node():
+    """/battery_status. Cheap enough to keep even in `lap`: a lap that got slower because
+    the pack sagged is not a slower car, and only this node can tell the two apart."""
+    return Node(package='battery', executable='battery_node', name='battery_node',
+                output='screen')

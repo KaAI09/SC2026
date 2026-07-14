@@ -12,6 +12,7 @@ cd ~/workspace/SC2026
 |---|---|
 | **`panel_replay.py`** ⭐ | 주행 raw → 4패널 재구성 + 실차 csv 대조 + 파라미터 A/B |
 | `calibrate.py` | 체커보드·지면 사진 → `camera.yaml` (K/D + 호모그래피 H) |
+| `lane_color_probe.py` | 대회장 조명에서 흰/노랑이 **HSV 어디 있는지 측정** → 임계값 제안 |
 | `color_gate_probe.py` | `color_gate` 가 진짜 차선을 지우는지 센다 (남은 작업 B4) |
 | `make_lane_target.py` | 직선 차선 검증 타깃 → A4 타일 PDF (트랙 없이 `--check`) |
 | `_common.py` | 영상/CSV/profile IO 헬퍼 |
@@ -49,6 +50,27 @@ cd ~/workspace/SC2026
 `--csv` 를 주면 실차가 그때 발행한 LaneState 와 **프레임 단위로 대조**한다 (`|Δcenter_error|`
 중앙값·p90·최대). **중앙값 < 0.02 면 재현 일치** — 오프라인 튜닝을 믿어도 되는지에 대한
 검증이다.
+
+## lane_color_probe — 색 임계를 재는 도구
+
+색 임계를 눈으로 맞추면 **순환에 빠진다**: 임계가 틀려서 테이프를 못 잡으면, 그 테이프의
+HSV 분포도 볼 수 없다. 그래서 느슨한 **탐색 임계**로 후보를 먼저 건지고, 거기서 나온
+**분위수**로 운영 임계를 제안한다.
+
+측정은 전부 **BEV 위에서** 한다. 원본 프레임에는 관중·천장·옆 트랙이 같이 찍히고, 그것들의
+HSV 를 섞은 히스토그램은 노면에 대해 아무 말도 하지 않는다. BEV 는 캘리브레이션된 지면
+크롭이니 거기 있는 픽셀은 정의상 노면이다. **그러니 `camera.yaml` 이 먼저 맞아야 한다.**
+
+```bash
+.venv/bin/python offline/lane_color_probe.py offline/rslt/<세션>/raw/collect_*.mp4 \
+    --camera D-Racer-Kit/src/config/camera.yaml \
+    --profile D-Racer-Kit/src/config/profiles/track2025.yaml --stride 5
+```
+
+0714 대회장 지면 사진 결과: 노란 테이프의 H 피크가 **17~19** 인데 `yellow_h_lo` 가 **18** —
+임계 경계에 걸터앉아 난색 픽셀의 **31%** 가 잘려나간다. 그리고 `y_frac = 0.074` 로
+`color_gate` (0.15)의 **절반**이라 노란색이 **상시 버려진다**. 이 트랙의 노란 차선은 실선
+지름길이 아니라 **점선 중앙선**이고, 점선은 면적 비율 게이트를 원리적으로 통과할 수 없다.
 
 ## color_gate_probe — B4 를 세는 도구
 

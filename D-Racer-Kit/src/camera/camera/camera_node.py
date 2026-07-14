@@ -30,7 +30,10 @@ class CameraNode(Node):
         self.declare_parameter('mipi_camera_device', '/dev/video0')
         self.declare_parameter('flip_method', 'rotate-180')
         self.declare_parameter('jpeg_quality', 90)
-        self.declare_parameter('debug_log', True)
+        # OFF. This logged one line PER FRAME -- 30 a second, forever, through the launch
+        # pipe -- to say a number ("Published frame: 4211 bytes") that no one reads and
+        # `ros2 topic hz` answers better. It is the only node that logs on the hot path.
+        self.declare_parameter('debug_log', False)
 
         self.vehicle_config_file = os.path.expanduser(
             str(self.get_parameter('vehicle_config_file').value)

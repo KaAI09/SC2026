@@ -7,6 +7,7 @@ from dracer_msgs.msg import Battery
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage
 import yaml
 
@@ -150,11 +151,22 @@ class MonitorNode(Node):
             self.battery_callback,
             10,
         )
+        # BEST_EFFORT / depth 1 -- the same QoS perception uses, and for the same reason.
+        # A monitor wants the NEWEST frame; it never wants an old one. The default
+        # (RELIABLE / depth 10) does not drop a frame the dashboard cannot keep up with,
+        # it QUEUES it -- so a link that falls behind hands the browser a picture of where
+        # the car was ten frames ago, and never catches up. A dropped frame on a dashboard
+        # costs nothing. A stale one is a lie about where the car is.
         self.create_subscription(
             CompressedImage,
             self.image_topic,
             self.image_callback,
-            10,
+            QoSProfile(
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+                reliability=ReliabilityPolicy.BEST_EFFORT,
+                durability=DurabilityPolicy.VOLATILE,
+            ),
         )
         self.storage_timer = self.create_timer(
             self.storage_poll_interval_sec,

@@ -9,7 +9,7 @@ SEA:ME Hackathon 2026 — TOPST D3-G 기반 자율주행 스케일카.
 | 문서 | 내용 |
 |---|---|
 | **이 문서** | 시스템 구조 · 인지 · 제어 · 현재 상태 · 남은 작업 |
-| [Task command.md](Task%20command.md) | 런치별 운영 명령 (calibrate / record / perceive / drive) |
+| [Task command.md](Task%20command.md) | 런치별 운영 명령 (calibrate / collect / drive / lap) |
 | [offline/README.md](offline/README.md) | 오프라인 도구 (panel_replay · calibrate) |
 | [CLAUDE.md](CLAUDE.md) | Claude Code 작업 규칙 |
 | `D-Racer-Kit/docs/`, `Notice/` | 공식 하드웨어·규정 문서 (**1차 기술 참조 — 수정 금지**) |
@@ -34,15 +34,15 @@ Env/                 팀 아키텍처·워크플로 문서
 | 패키지 | 역할 |
 |---|---|
 | `camera` | GStreamer → `/camera/image/compressed` |
-| `perception` | 카메라 → `dracer_core` 파이프라인 → `/lane/state` |
+| `perception` | 카메라 → **차선 파이프라인 + 객체 검출** → `/lane/state` + `/mission/state` |
 | `control` | LaneState → `/control` + engage/E-stop 안전 게이팅 |
 | `actuator` | PCA9685 조향/스로틀 구동. **E-STOP 이 여기서 걸린다** |
 | `joystick` | 패드 입력 → 조향/스로틀 + 캘리브레이션 |
 | `recorder` | 동기 mp4 + csv 기록 (**rosbag 아님**) |
 | `monitor` | Flask 웹 대시보드 (:5000) |
 | `battery` | INA219 배터리 상태 |
-| `dracer_core` | **ROS 비의존** 인지·제어 코어 (numpy/opencv만). 노드 없음 — 온라인·오프라인이 이걸 공유한다 |
-| `dracer_msgs` | 메시지 정의 (Battery · Control · Joystick · LaneState) |
+| `dracer_core` | **ROS 비의존** 인지·제어·객체검출 코어 (numpy/opencv만). 노드 없음 — 온라인·오프라인이 이걸 공유한다 |
+| `dracer_msgs` | 메시지 정의 (Battery · Control · Joystick · LaneState · MissionState) |
 | `dracer_bringup` | 런치 전용 |
 | `topst_utils` | HW 드라이버 (d3racer · gamepads · ina219 · pca9685) |
 
@@ -52,28 +52,43 @@ Env/                 팀 아키텍처·워크플로 문서
 ### 노드 · 토픽
 
 ```
-camera_node ──/camera/image/compressed──┬─► perception_node ──/lane/state──┬─► control_node ──/control──┐
-                                        │        └──/lane/debug/compressed │                            │
-                                        └─► monitor(:5000) · recorder      └─► recorder                 │
-joystick_node ──/joystick──────────────────────────────────────────────────► control_node               │
-                                        └──────────────────────────────────────────────────────────────► actuator_node
+camera_node ──/camera/image/compressed──┬─► perception_node ──/lane/state─────┬─► control_node ──/control──┐
+                                        │      ├──/mission/state ─────────────┤                            │
+                                        │      └──/lane/debug/compressed      │                            │
+                                        └─► monitor(:5000) · recorder         └─► recorder                 │
+joystick_node ──/joystick─────────────────────────────────────────────────────► control_node               │
+                                        └─────────────────────────────────────────────────────────────────► actuator_node
 battery_node ──/battery_status──► monitor
 ```
 
-- `/lane/debug/compressed` (4패널)는 **구독자가 있을 때만 생성**된다. `drive` 런치는 아무도
-  구독하지 않으므로 인지가 패널을 아예 만들지 않는다 — 렌더링이 검출의 4배를 먹는다.
+- **`perception_node` 는 차선과 객체를 한 노드에서 돌린다.** 같은 프레임, 같은 stamp.
+  두 노드였을 때는 각자 JPEG 디코딩하고, 각자 HSV 변환하고, 각자 디버그 영상을 인코딩했고,
+  **서로 다른 프레임을 봤다** — "표지판을 언제 봤고 분기가 언제 떴나" 를 물을 수 없었다.
+  병합 후: imdecode 1회 · HSV 1회 · GRAY 1회 · 디버그 인코드 1회.
+- `/lane/debug/compressed` (디버그 패널)는 **구독자가 있을 때만 생성**된다 — 렌더링이 두 검출기를
+  합친 것보다 비싸다. 그래서 **모니터를 어디에 붙이느냐가 곧 비용의 스위치**다: raw 카메라에
+  붙이면 0, 디버그 토픽에 붙이면 그 비용을 자기가 요청한 것이다. `lap` 은 모니터가 아예 없다.
 - `actuator_node` 와 `monitor_node` 는 **구독만** 한다.
 
 ### 런치 (`dracer_bringup`)
 
-**base** = camera · actuator · joystick · monitor · battery (전 런치 공통).
+**core** = camera · actuator · joystick. 어떤 런치에서도 빠지지 않는다 — 조이스틱이
+**E-STOP(X) · engage(A) · 녹화(START)** 경로다. `monitor`·`battery` 는 런치가 골라 붙인다.
 
-| 런치 | 구성 | 용도 |
-|---|---|---|
-| `calibrate` | base | 카메라 각도 + 서보 중립(`SERVO_CENTER_US`)/`ACCEL_RATIO` 저장 |
-| `record` | base + recorder | 오프라인용 원본 영상 수집 |
-| `perceive` | base + perception + recorder | 인지 검증 + 데이터 수집 + live 튜닝 |
-| `drive` | base + perception + control + recorder | 자율주행 (`engage`) |
+| 런치 | 주행 | 인지 | 제어 | 모니터 | 녹화 | 용도 |
+|---|---|---|---|---|---|---|
+| `calibrate` | 수동 | ✗ | ✗ | 원본 | ✗ | 카메라 각도 + 서보 중립(`SERVO_CENTER_US`)/`ACCEL_RATIO` **저장** |
+| `collect` | 수동 | ✓ | ✗ | 원본 | 원본 + csv | **데이터 수집** (패널은 오프라인에서) |
+| `drive` | 자동 | ✓ | ✓ | 선택 | 원본 + csv | 자율주행 **튜닝·검증** (`engage`) |
+| `lap` | 자동 | ✓ | ✓ | **✗** | **✗** | **랩타임 측정** (최경량) |
+
+- **녹화는 언제나 원본 + csv 뿐이다.** 4패널 mp4 는 만들지 않는다 — `offline/panel_replay.py`
+  가 raw+csv 에서 정확히 되살린다. 차가 자기도 안 보는 영상을 렌더링하느라 프레임을 흘릴
+  이유가 없다.
+- **`lap` = `drive` − 모니터 − recorder.** 웹으로 JPEG 를 스트리밍하고 mp4 를 인코딩하는 차는
+  타임드 랩을 달릴 차가 아니다. 켜둔 채 잰 랩타임은 실제보다 느리다.
+- 구 `record`(수동+원본녹화)와 `perceive`(수동+인지+4패널)는 **`collect` 로 통합**됐다. 패널이
+  오프라인으로 간 순간 둘을 나눌 이유가 사라졌다.
 
 명령은 [Task command.md](Task%20command.md).
 
@@ -345,6 +360,13 @@ seed 하고, `ros2 param set` 이 즉시 반영된다.
 
 - **`panel_replay.py`** ⭐ 주력. 주행 raw + csv → 4패널 재구성 + 실차 LaneState 대조 + 파라미터 A/B
 - `calibrate.py` — 체커보드·지면 사진 → `camera.yaml`
+- `lane_color_probe.py` — 대회장 조명에서 흰/노랑이 **HSV 어디에 있는지 측정**하고 임계값을
+  제안한다. 색 임계를 눈으로 맞추면 순환에 빠진다(임계가 틀려 테이프를 못 잡으면 그 테이프의
+  분포도 못 본다) — 느슨한 탐색 임계로 후보를 건진 뒤 **분위수**로 운영 임계를 제안한다.
+  측정은 **BEV 위에서만** 한다: 원본 프레임에는 관중·천장이 같이 찍히고, 그 HSV 를 섞은
+  히스토그램은 노면에 대해 아무 말도 하지 않는다. 판정은 차가 쓰는 그 함수(`color_masks` ·
+  `morph_gate`)로 한다.
+- `color_gate_probe.py` — `color_gate` 가 진짜 차선을 지우는지 센다 (B4).
 
 **제어기 튜닝은 실차 폐루프로만 한다.** 녹화 영상은 **사람이 지난 경로의 뷰**만 담으므로, 다르게
 조향한 컨트롤러가 봤을 프레임은 존재하지 않는다(covariate shift). 오프라인으로는 명령 품질밖에
@@ -402,20 +424,34 @@ seed 하고, `ros2 param set` 이 즉시 반영된다.
       **⚠ 조향 스케일이 바뀌었다: `kp` 0.45 → 0.75, `slew_rate_per_sec` 4.5 → 7.5,
       `steer_max` 0.7 → 1.0** (옛 각도 `41.67u` vs 새 `25u` → 게인비 1.667).
       **계산상 등가일 뿐이다 — 트랙에서 확인해야 한다.**
-- [ ] **A2. `camera.yaml` 이 미확정이다 — 새 캘리브를 아직 못 믿는다.**
-      새 지면 사진(`ground_00(new).png`)은 **체커보드가 지면에서 4.5cm 떠서** 찍혔다.
-      `ground_pose` 는 "보드 = 지면" 을 전제로 `solvePnP` 를 풀므로, `H` 가 지면이 아니라
-      **4.5cm 위의 유령 평면**으로의 사영이 된다. 이 함정의 최악은 **숫자가 전부 멀쩡해
-      보인다는 것**이다 — 카메라 높이가 18.7cm(실제 23.2)로, 전방 시야가 69cm(실제 85)로
-      나오고, **ground rms 는 0.032cm 로 오히려 좋다**(보드 평면에 대한 fit 은 훌륭하니까).
-      `--board-offset-cm` 으로 해석적 보정은 되지만("정확히 그 높이로, 정확히 평행하게" 라는
-      가정 위에 선다), **보드를 지면에 직접 놓고 다시 찍는 게 확실하다.**
-      그리고 **`--check` 없이는 어느 캘리브도 신뢰하면 안 된다** — `panel_replay` 실차 대조는
-      이 문제에 **둔감하다**(`center_error` 가 BEV 폭으로 정규화된 값이라, BEV 스케일이 통째로
-      틀어져도 상대 위치는 비슷하게 나온다). 실제로 **틀린 캘리브도 "재현 일치" 를 통과했다.**
-      → 지면 사진 재촬영 + 직선 차선 프레임으로 `--check` (Task command §C-2).
-      트랙이 없으면 [`offline/calib/lane_target.pdf`](offline/calib/lane_target.pdf) 를
-      인쇄해서 쓴다 (A4 4장, 실제와 같은 35cm 차선).
+- [x] **A2. `camera.yaml` — 0714 대회장 지면 사진으로 재산출. 🚗 `--check` 대기.**
+      옛 파일은 **지금의 카메라 자세에 대해 틀렸다**, 그리고 그것은 조용히 틀렸다. 같은
+      대회장 사진 한 장을 두 캘리브로 각각 BEV 로 펴서 좌우 흰 테이프 중심 간격만 재면:
+
+      | 전방거리 | 옛 `camera.yaml` | 0714 재산출 |
+      |---|---|---|
+      | 74cm | 16.0cm | **34.2cm** |
+      | 70cm | 18.3cm | **33.9cm** |
+      | 66cm | 19.8cm | **34.0cm** |
+      | 62cm | 21.5cm | **34.1cm** |
+
+      옛 H 는 차선폭을 16~21cm 로, **거리마다 다르게** 잰다 (= 평행하지 않다 = 기하가 틀렸다).
+      `_pair_gate` 는 폭이 `lane_width_cm ± pair_width_tol` = **26.25~43.75cm** 여야 통과시키므로,
+      그 BEV 에서는 **쌍 코리도어가 구조적으로 만들어질 수 없다.** 하드웨어도 색 마스크도
+      멀쩡한 채로 차선만 안 잡힌다.
+      **§6 의 coast 65.5% / 쌍검출 36.4% 는 "렌즈 FOV 한계" 가 아니라 이것이었을 가능성이
+      크다** — 그때 기각했던 "쌍검출률을 소프트웨어로 올리기" 는 재측정 대상이다.
+      새 캘리브: `--board-offset-cm 1.0` (보드 두께) 보정 후 **카메라 높이 23.1 / 23.0cm**
+      (서로 다른 두 사진), 실측 23.2cm 와 오차 0.1~0.2cm. 7cm 띄운 사진은 정확히 그만큼 낮은
+      15.7cm 를 내놓아 물리적 일관성까지 확인됐다. 재투영 RMS 0.063cm.
+      **가시 지면이 y=36~78cm 다** (옛 26~78). 카메라가 더 위를 보고 있다 — 근거리 10cm 를
+      잃었고, 그래서 `center_error` 측정 지점이 26→36cm 로 멀어졌다. **`kp` 를 트랙에서
+      다시 확인해야 한다.**
+      → 남은 것: **직선 구간 프레임으로 `--check`** (Task command §C-2 ③). 그 전까지 이
+      캘리브는 "물리적으로 일관됨" 이지 "검증됨" 이 아니다.
+      > **`panel_replay` 실차 대조는 이 문제에 둔감하다** — `center_error` 가 BEV 폭으로
+      > 정규화된 값이라 BEV 스케일이 통째로 틀어져도 상대 위치는 비슷하게 나온다. **틀린
+      > 캘리브도 "재현 일치" 를 통과했다.** `--check` 를 건너뛰지 마라.
 
 ### 🟠 B. 기능
 
@@ -450,7 +486,24 @@ seed 하고, `ros2 param set` 이 즉시 반영된다.
       보존한다 (§3.6). 예전엔 **파라미터를 하나도 안 바꾸고 재설정만 해도** `|Δema|` 가
       0.0377 튀고 77프레임이 달라졌다 — 튜닝하려던 값의 효과(0.0014)보다 **리셋 노이즈가
       27배** 컸다.
-- [ ] **B4. `color_gate: 0.15` — 측정으로 보류. (스킵)**
+- [ ] **B5. 대회장(0714) 색 임계 — 측정했다. 트랙 녹화로 확정만 남았다.**
+      [`offline/lane_color_probe.py`](offline/lane_color_probe.py) 를 대회장 지면 사진에
+      돌린 결과 (BEV 위, 즉 노면만):
+      - **노랑 H 하한 18 이 난색 픽셀의 31% 를 자른다.** 실제 피크는 **17~19** 로 임계
+        **경계에 걸터앉아 있다** — 조명이 조금만 바뀌면 통째로 날아간다. 이 트랙의 노란
+        차선은 2025 의 노란 지름길이 아니라 **주황에 가까운 점선 중앙선**이고, 주황은
+        노랑보다 H 가 낮다.
+      - **흰 V 하한 185 가 후보 분포의 p10(179)보다 높다** — 그늘진 테이프가 잘려나간다.
+        (V p50=205 라 대부분은 통과한다. 마진이 없을 뿐이다.)
+      → 확정은 `collect` 한 바퀴 녹화로. 사진 한 장은 그 순간의 조명이지 트랙의 조명이 아니다.
+- [ ] **B4. `color_gate: 0.15` — 재개. 이 트랙이 그 판정 데이터다.**
+      0712 에서는 "노란 분기 진입 구간을 담은 데이터가 없다" 며 보류했다. **그 데이터가
+      지금 여기 있고, 답이 바뀐다**: 대회장 사진에서 노랑 비율 `y_frac = 0.074` 로 게이트
+      **0.15 의 절반이다 → 노란 테이프가 100% 버려진다.** 우연이 아니라 구조다 — 점선은
+      실선보다 면적이 작고, 게이트는 면적 비율로 판정한다. **점선 중앙선은 이 게이트를
+      원리적으로 통과할 수 없다.**
+      → `collect` 녹화로 재측정 후 `color_gate` 를 낮추거나 0 으로 끈다.
+      아래 옛 측정(0712)은 **다른 트랙의 이야기**로 남긴다:
       0712 재생 실측: 노란색이 죽은 프레임은 **14개(1.1%)** 이고 그 때문에 놓친 분기는
       **0개**다. 게이트를 완전히 꺼도 `n_corridors` 가 **한 프레임도** 안 변한다. 실제로 죽는
       건 노란색이 아니라 **흰색**(746프레임, 57.7%) — 이 트랙은 두 색이 거의 **배타적**이라
@@ -479,8 +532,11 @@ seed 하고, `ros2 param set` 이 즉시 반영된다.
 
 - **연속 confidence** — `corr(quality, 오차) = +0.246`. **방향이 반대다.** 틀린 coast 는
   기하학적으로 완벽하다 (span 0.98, 잔차 1.3cm).
-- **쌍검출률을 소프트웨어로 올리기 (2차선 프레임)** — 렌즈 FOV 한계다. 히스토그램 창·게이트
-  전부 효과 0. *(3차선 이상은 모든 쌍 페어링으로 해결됨 — §3.2)*
+- **쌍검출률을 소프트웨어로 올리기 (2차선 프레임)** — ⚠ **이 기각은 무효일 수 있다.**
+  당시 결론은 "렌즈 FOV 한계" 였으나, 그 측정은 **차선폭을 16~21cm 로 재던 BEV** 위에서
+  이뤄졌다 (A2). 그 BEV 에서는 35cm 쌍 게이트를 어떤 소프트웨어도 통과시킬 수 없다 —
+  히스토그램 창을 고쳐도 효과가 0 인 게 당연하다. **캘리브 확정 후 재측정할 것.**
+  *(3차선 이상은 모든 쌍 페어링으로 해결됨 — §3.2)*
 - **핫패스 최적화** — `cv2.inRange` **−19%**, 2채널 remap **−15%**. **둘 다 느려진다.**
   파이프라인은 0.72ms / 33ms 예산이다. 최적화할 필요가 없다.
 - **평행도를 페어링 게이트로** — 노란 갈림길을 **52% → 0%** 로 지운다 (§3.2).

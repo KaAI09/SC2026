@@ -42,6 +42,11 @@ import random
 import cv2
 import numpy as np
 
+# Rendering only. The lane pipeline itself never touches mission_core -- the two run as
+# independent detectors on the same frame, and `render_bev` is the one place they meet,
+# because a human watching the car wants one picture, not two.
+from .mission_core import annotate, CLASS_NAMES
+
 
 # ==========================================================================
 # Config + presets (single source; imported by online node + offline tools)
@@ -339,16 +344,28 @@ LABEL_COLORS = {  # BGR
     'YS-L': (0, 230, 0), 'YS-R': (0, 150, 0),         # green (straight)
 }
 EGO_CENTER_COLOR = (255, 255, 0)   # cyan — ego corridor centerline (control value)
+# A corridor's boundaries are always ONE colour (`pair_same_color`), and that colour is the
+# ROUTE'S IDENTITY: the main line and the sign island are bounded white-white, the roundabout
+# yellow-yellow. So colouring a corridor by its boundaries makes the branch TYPE visible --
+# {W,Y} = main-vs-roundabout, {Y,Y} = the roundabout junction, {W,W} = the sign island.
+CORRIDOR_COLORS = {'W': (170, 170, 170), 'Y': (0, 170, 255)}
 
 
 # ==========================================================================
 # A: detection (HSV white/yellow masks + morphology + color-dominance gate)
 # ==========================================================================
-def color_masks(frame, c):
+def color_masks(frame, c, hsv=None):
     """Per-pixel HSV colour test. No morphology, no gate -- those are SHAPE and AREA
     judgements, and in the front view neither has a stable meaning (a 5px kernel spans
-    1cm of tarmac up close and 5cm at the far edge). They belong after the warp."""
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    1cm of tarmac up close and 5cm at the far edge). They belong after the warp.
+
+    `hsv`, if given, is the already-converted HSV of `frame` (the merged node computes it
+    once for the whole frame and the mission detectors share it). A per-pixel conversion of
+    a slice is bit-identical to the slice of a conversion, so this changes nothing except
+    how many times the frame gets walked.
+    """
+    if hsv is None:
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     H, S, V = cv2.split(hsv)
     white = ((S <= c.white_s_max) & (V >= c.white_v_min)).astype(np.uint8) * 255
     yellow = ((H >= c.yellow_h_lo) & (H <= c.yellow_h_hi) &
@@ -1216,9 +1233,13 @@ class LanePipeline:
         if seed_changed:
             self._rng = random.Random(self.c.branch_seed)
 
-    def process(self, bgr, dt_s, debug=False):
+    def process(self, bgr, dt_s, debug=False, hsv=None):
         """Run one frame. Returns `state`; with debug=True returns (state, dbg), the
         second being intermediates for render_panels (masks, lanes, windows, ec, ...).
+
+        `hsv` is an optional FULL-FRAME HSV of `bgr`. The merged perception node computes
+        it once on the frames where mission detection also runs, so the frame is converted
+        once instead of twice. Omit it and the pipeline converts its own band, as before.
 
         `dt_s` is the interval since the previous frame, in SECONDS, and it is REQUIRED --
         every filter in here (lane-coeff EMA, corridor-width EMA, center_error EMA) and every
@@ -1247,7 +1268,8 @@ class LanePipeline:
         r0, r1 = self.cam.src_rows
         mw = np.zeros((h, w), np.uint8)
         my = np.zeros((h, w), np.uint8)
-        mw[r0:r1], my[r0:r1] = color_masks(bgr[r0:r1], c)
+        mw[r0:r1], my[r0:r1] = color_masks(bgr[r0:r1], c,
+                                           None if hsv is None else hsv[r0:r1])
         mw = self.cam.to_bev(mw)
         my = self.cam.to_bev(my)
         # Shape + area judgements now that a pixel IS a length.
@@ -1340,7 +1362,13 @@ class LanePipeline:
                    'trap': trap, 'y0': y0, 'ema': ema, 'fstate': fstate,
                    'center_error': center_error, 'heading': heading,
                    'confidence': confidence, 'used_fb': used_fb, 'cam': self.cam,
-                   'bev_size': (w, h)}
+                   'bev_size': (w, h),
+                   # EVERY corridor, not just ours, plus the threshold that separates the
+                   # one we are IN from the fork we have not taken. `render_bev` draws them
+                   # all: n_corridors > 1 IS the branch, and a branch you cannot see is a
+                   # branch you cannot debug.
+                   'centers': centers, 'n_corridors': n_corridors,
+                   'ego_rule': state['ego_rule'], 'pair_parallel': c.pair_parallel}
             return state, dbg
         return state
 
@@ -1367,6 +1395,95 @@ def _panel(img, title):
     cv2.rectangle(img, (0, 0), (img.shape[1], 14), (0, 0, 0), -1)
     cv2.putText(img, title, (3, 10), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (255, 255, 255), 1)
     return img
+
+
+def _footer(img, text):
+    h = img.shape[0]
+    cv2.rectangle(img, (0, h - 14), (img.shape[1], h), (0, 0, 0), -1)
+    cv2.putText(img, text, (3, h - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (255, 255, 255), 1)
+    return img
+
+
+def _draw_bev_fit(img, coeffs, y_lo, y_hi, color, thick, dashed=False):
+    """Draw a fit in BEV coords. No unwarp: the fits ALREADY live here. (`_draw_fit`
+    projects them back to the camera, which is a per-lane cost `render_panels` pays and
+    this one does not.)"""
+    ys = np.linspace(float(y_lo), float(y_hi), 24)
+    xs = _ebottom(coeffs, ys)
+    p = np.stack([xs, ys], axis=1).astype(np.int32)
+    if not dashed:
+        cv2.polylines(img, [p], False, color, thick)
+        return
+    for i in range(0, len(p) - 1, 2):        # every other segment -> a dash
+        cv2.line(img, (int(p[i][0]), int(p[i][1])),
+                 (int(p[i + 1][0]), int(p[i + 1][1])), color, thick)
+
+
+def render_bev(bgr, dbg, cfg, dets=None, confirmed=None):
+    """The ONE panel `drive` and `lap` watch: metric BEV | camera.
+
+        [ BEV: masks + labelled lanes + EVERY corridor centreline ] [ camera: mission boxes ]
+
+    Two coordinate systems, side by side, because a bounding box CANNOT live in a BEV. A
+    traffic light is above the ground plane, so it projects onto no BEV cell at all; a lane
+    corridor is a metric ground fact and is unreadable anywhere else. The BEV is where the
+    lane question is asked, the camera view is where the object question is asked, and one
+    canvas pretending to answer both would simply be hiding one of them.
+
+    552x240 against `render_panels`' 1280x240 -- 43% of the pixels, and no per-lane unwarp.
+    That gap is the whole reason this exists: the 4-panel strip plus its JPEG encode is what
+    made perception drop frames, and `drive` is the launch that wants to be watched.
+
+    Corridors are coloured by their BOUNDARIES (see CORRIDOR_COLORS), so the branch TYPE is
+    visible at a glance, and a SPLAYING corridor is drawn dashed -- that is not a bad
+    corridor, it is the fork we have not taken (`_pair_gate`). The ego centreline (cyan, on
+    top) is the only one the car is actually steering on.
+    """
+    mw, my, lanes = dbg['mw'], dbg['my'], dbg['lanes']
+    ec, centers = dbg['ec'], dbg.get('centers') or []
+    cam = dbg.get('cam')
+    bw, bh = dbg.get('bev_size', (bgr.shape[1], bgr.shape[0]))
+    parallel = float(dbg.get('pair_parallel', 0.0))
+
+    bev = np.zeros((bh, bw, 3), np.uint8)
+    bev[mw > 0] = (90, 90, 90)
+    bev[my > 0] = (0, 110, 140)
+    axis_u = int(cam.axis_u) if cam is not None else bw // 2
+    cv2.line(bev, (axis_u, 0), (axis_u, bh - 1), (0, 0, 130), 1)   # vehicle axis
+
+    for ins in lanes:
+        if ins['coeffs'] is None:
+            continue
+        _draw_bev_fit(bev, ins['coeffs'], *_lane_span(ins),
+                      LABEL_COLORS.get(classify(ins, bw), (0, 255, 0)), 2)
+
+    for cc in centers:
+        if cc is ec:
+            continue                        # drawn last, on top, in cyan
+        splay = parallel > 0 and cc.get('spread', 0.0) > parallel
+        _draw_bev_fit(bev, cc['coeffs'], cc['y_lo'], cc['y_hi'],
+                      CORRIDOR_COLORS.get(cc['a']['color'], (200, 200, 200)),
+                      1, dashed=splay)
+    if ec is not None:
+        _draw_bev_fit(bev, ec['coeffs'], ec.get('y_lo', 0), ec.get('y_hi', bh - 1),
+                      EGO_CENTER_COLOR, 2)
+
+    cam_view = annotate(bgr, dets) if dets else bgr.copy()
+    ch = cam_view.shape[0]
+
+    left = np.zeros((ch, bw, 3), np.uint8)
+    y0 = max(0, (ch - bh) // 2)
+    rows = min(bh, ch - y0)
+    left[y0:y0 + rows] = bev[:rows]
+
+    off = ('off=--' if (ec is None or cam is None)
+           else f"off={ec['offset'] / cam.px_per_cm:+.1f}cm{'(coast)' if ec.get('coast') else ''}")
+    _panel(left, f"BEV  n={dbg.get('n_corridors', 0)}[{dbg.get('ego_rule', 'none')}]")
+    _footer(left, f"{off}  {dbg['fstate']}")
+    _panel(cam_view, f"camera  {cfg.name}")
+    _footer(cam_view, 'mission: ' + (CLASS_NAMES.get(confirmed, '?') if confirmed is not None
+                                     else '--'))
+    return np.hstack([left, cam_view])
 
 
 def _inst_color(idx):

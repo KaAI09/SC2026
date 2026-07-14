@@ -2,30 +2,34 @@
 
 Standalone recording, decoupled from perception/control. Mirrors the joystick
 START button (Joystick.is_recording). One START->STOP cycle = one session, and a
-session writes up to three files that SHARE ONE basename `<prefix>_<timestamp>`:
+session writes files that SHARE ONE basename `<prefix>_<timestamp>`:
 
     <record_dir>/
-      panel/<prefix>_<stamp>.mp4   annotated debug overlay (/lane/debug/compressed)
       raw/<prefix>_<stamp>.mp4     RAW camera (/camera/image/compressed)
       csv/<prefix>_<stamp>.csv     per-frame LaneState + autonomous + manual command
+      panel/<prefix>_<stamp>.mp4   annotated overlay -- ONLY if a launch asks for it
 
-The RAW stream is recorded ALONGSIDE the panel stream (not instead of it), so
-offline tools get unannotated frames while the panel stream stays human-readable.
-When a launch has no perception (record.launch), the raw stream IS the main
-stream and only raw/ + csv/ are written.
+WHAT THE LAUNCHES ACTUALLY DO: every one of them points `image_topic` at the raw
+camera and leaves `raw_topic` empty, so raw IS the main stream and only raw/ + csv/
+are written. The panel mp4 is reconstructed offline (`offline/panel_replay.py`) from
+exactly those two files -- the car must not spend a frame's worth of CPU rendering a
+video it is not watching. The dual-stream path below stays because the capability is
+free to keep, not because anything uses it.
 
-Panel frames are stamped top-right with `<name> f<idx> t<sec>` so a single
-screenshot identifies its source clip, video frame, and csv row (frame_idx is 1:1
-with the csv data row). RAW frames are NEVER stamped -- an overlay would corrupt
+Panel frames (when recorded) are stamped top-right with `<name> f<idx> t<sec>` so a
+single screenshot identifies its source clip, video frame, and csv row (frame_idx is
+1:1 with the csv data row). RAW frames are NEVER stamped -- an overlay would corrupt
 the very pixels offline perception and camera calibration must read.
 
 Topics (all subscribe):
-  image_topic  (sensor_msgs/CompressedImage)  main stream; drives csv + stamping
-  raw_topic    (sensor_msgs/CompressedImage)  extra RAW stream (skipped if == image_topic)
-  /lane/state  (dracer_msgs/LaneState)
-  /control     (dracer_msgs/Control)          autonomous command
-  joystick     (dracer_msgs/Joystick)         is_recording + manual command
-Params: image_topic, raw_topic, record_dir, record_fps, name_prefix.
+  image_topic    (sensor_msgs/CompressedImage)  main stream; drives csv + stamping
+  raw_topic      (sensor_msgs/CompressedImage)  extra RAW stream (skipped if == image_topic)
+  /lane/state    (dracer_msgs/LaneState)
+  /mission/state (dracer_msgs/MissionState)     object detection: confirmed class + raw box
+  /control       (dracer_msgs/Control)          autonomous command
+  joystick       (dracer_msgs/Joystick)         is_recording + manual command
+Params: image_topic, raw_topic, state_topic, mission_topic, control_topic, joystick_topic,
+        record_dir, record_fps, name_prefix.
 """
 import csv
 import math
@@ -41,6 +45,7 @@ from sensor_msgs.msg import CompressedImage
 from dracer_msgs.msg import Control
 from dracer_msgs.msg import Joystick
 from dracer_msgs.msg import LaneState
+from dracer_msgs.msg import MissionState
 
 PANEL_DIR, RAW_DIR, CSV_DIR = 'panel', 'raw', 'csv'
 
@@ -62,6 +67,7 @@ class RecorderNode(Node):
         self.declare_parameter('image_topic', '/lane/debug/compressed')
         self.declare_parameter('raw_topic', '/camera/image/compressed')
         self.declare_parameter('state_topic', '/lane/state')
+        self.declare_parameter('mission_topic', '/mission/state')
         self.declare_parameter('control_topic', '/control')
         self.declare_parameter('joystick_topic', 'joystick')
         self.declare_parameter('record_dir', '')
@@ -72,20 +78,22 @@ class RecorderNode(Node):
         image_topic = str(gp('image_topic').value)
         raw_topic = str(gp('raw_topic').value)
         state_topic = str(gp('state_topic').value)
+        mission_topic = str(gp('mission_topic').value)
         control_topic = str(gp('control_topic').value)
         joystick_topic = str(gp('joystick_topic').value)
         self.record_dir = os.path.expanduser(str(gp('record_dir').value)) or os.getcwd()
         self.record_fps = float(gp('record_fps').value)
         self.name_prefix = str(gp('name_prefix').value)
 
-        # Main stream is the panel overlay UNLESS a launch points image_topic at the
-        # raw camera (record.launch: no perception). Then raw IS the main stream and
-        # there is nothing extra to record.
+        # Raw IS the main stream whenever a launch points image_topic at the camera and
+        # leaves raw_topic empty -- which every launch now does. Only then is there nothing
+        # extra to record. Give the node a distinct raw_topic and it records both.
         self._dual = bool(raw_topic) and raw_topic != image_topic
         self._main_dir = PANEL_DIR if self._dual else RAW_DIR
 
         # latest signals (written per main-stream frame)
         self._state = None
+        self._mission = None
         self._ctrl = (0.0, 0.0)
         self._manual = (0.0, 0.0)
         self._e_stop = False
@@ -105,6 +113,7 @@ class RecorderNode(Node):
         if self._dual:
             self.create_subscription(CompressedImage, raw_topic, self.raw_callback, image_qos)
         self.create_subscription(LaneState, state_topic, self.state_callback, 10)
+        self.create_subscription(MissionState, mission_topic, self.mission_callback, 10)
         self.create_subscription(Control, control_topic, self.control_callback, 10)
         self.create_subscription(Joystick, joystick_topic, self.joystick_callback, 10)
 
@@ -119,6 +128,9 @@ class RecorderNode(Node):
     # ---- signal inputs ----------------------------------------------------
     def state_callback(self, msg: LaneState):
         self._state = msg
+
+    def mission_callback(self, msg: MissionState):
+        self._mission = msg
 
     def control_callback(self, msg: Control):
         self._ctrl = (float(msg.steering), float(msg.throttle))
@@ -184,7 +196,7 @@ class RecorderNode(Node):
     def _log_row(self, frame_t):
         if self._csv_writer is None:
             return
-        s = self._state
+        s, m = self._state, self._mission
         row = [round(frame_t, 4)]
         if s is not None:
             row += [
@@ -196,6 +208,16 @@ class RecorderNode(Node):
             ]
         else:
             row += ['', '', '', '', '', '', '', '', '', '', '', '']
+        # Mission runs on every (frame_skip+1)-th frame, so this is the LATEST result, held
+        # across the frames it did not run on -- at most `mission_skip` frames old. It is not
+        # resampled to the main stream and does not pretend to be: `mission_cls` repeating
+        # for three rows means three video frames shared one detection, which is exactly what
+        # happened.
+        if m is not None:
+            row += [int(m.cls), int(m.det_cls), round(float(m.det_conf), 3),
+                    int(m.det_x), int(m.det_y), int(m.det_w), int(m.det_h)]
+        else:
+            row += ['', '', '', '', '', '', '']
         row += [_f(self._ctrl[0]), _f(self._ctrl[1]),
                 _f(self._manual[0]), _f(self._manual[1]), int(self._e_stop)]
         self._csv_writer.writerow(row)
@@ -213,6 +235,12 @@ class RecorderNode(Node):
                 'frame_time', 'valid', 'center_error', 'ema', 'heading_valid',
                 'heading', 'confidence', 'left_conf', 'right_conf', 'state',
                 'used_fallback', 'n_corridors', 'ego_rule',
+                # mission_cls  = CONFIRMED (M-of-N debounced) class, -1 = none.
+                # mission_det_* = the RAW top detection of that frame, with its camera-pixel
+                # box. Both, because only the pair distinguishes "nothing was there" from
+                # "something fired and the vote rejected it".
+                'mission_cls', 'mission_det_cls', 'mission_det_conf',
+                'mission_det_x', 'mission_det_y', 'mission_det_w', 'mission_det_h',
                 'ctrl_steering', 'ctrl_throttle',
                 'manual_steering', 'manual_throttle', 'e_stop',
             ])
