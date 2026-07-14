@@ -134,19 +134,33 @@ def main():
     print('\n[흰 테이프]')
     if wV:
         S_, V_ = np.concatenate(wS), np.concatenate(wV)
-        s50, s90, s98 = _q(S_, 50, 90, 98)
-        v02, v05, v10, v50 = _q(V_, 2, 5, 10, 50)
-        print(f'  후보 {V_.size}px (탐색 S<={a.probe_white_s} V>={a.probe_white_v})')
-        print(f'  S: p50={s50:.0f}  p90={s90:.0f}  p98={s98:.0f}')
-        print(f'  V: p02={v02:.0f}  p05={v05:.0f}  p10={v10:.0f}  p50={v50:.0f}')
-        # V 하한은 분포의 하단 꼬리에 마진을 준다. 테이프의 그늘진 부분이 거기 산다.
-        sug_v = int(max(80, min(cfg.white_v_min, v05 - 10)))
-        sug_s = int(max(cfg.white_s_max, min(120, s98 + 10)))
-        print(f'  제안: white_v_min {cfg.white_v_min} -> {sug_v}   '
-              f'white_s_max {cfg.white_s_max} -> {sug_s}')
-        if cfg.white_v_min > v10:
-            print(f'  ⚠ 현재 V 하한({cfg.white_v_min})이 후보 분포의 p10({v10:.0f})보다 높다 '
-                  f'— 어두운 테이프가 잘려나가고 있다')
+        # 노랑과 같은 병: 탐색 임계(V>=140)에 **노면도 걸린다.** 파란 카펫과 회색 바닥은
+        # 저채도라 S 게이트를 그냥 통과하고, 그 픽셀들이 V 분포의 하단 꼬리를 아래로 끌어
+        # 내린다 -- 실측: 흰 차선이 거의 없는 클립에서 V p05 가 140 으로 나오고, 도구는
+        # `white_v_min 130` 을 제안했다. 그 임계를 넣으면 노면이 통째로 차선이 된다.
+        # 테이프는 노면보다 **확실히 밝다**. 그 조건을 따로 세고, 그것으로만 제안한다.
+        TAPE_V = 200
+        tape = V_ >= TAPE_V
+        print(f'  후보 {V_.size}px (탐색 S<={a.probe_white_s} V>={a.probe_white_v})  '
+              f'| 그중 테이프(V>={TAPE_V}) {int(tape.sum())}px')
+        if tape.sum() < 200:
+            print(f'  V p50={np.median(V_):.0f} — **테이프로 보기엔 너무 어둡다.** 이 클립의 '
+                  f'BEV 안에 흰 차선이 거의 없다 (잡은 것은 노면/카펫이다). 제안하지 않는다.')
+        else:
+            St, Vt = S_[tape], V_[tape]
+            s50, s90, s98 = _q(St, 50, 90, 98)
+            v02, v05, v10, v50 = _q(Vt, 2, 5, 10, 50)
+            print(f'  테이프 S: p50={s50:.0f}  p90={s90:.0f}  p98={s98:.0f}')
+            print(f'  테이프 V: p02={v02:.0f}  p05={v05:.0f}  p10={v10:.0f}  p50={v50:.0f}')
+            # 하한은 테이프 분포의 하단 꼬리에 마진을 준다 — 그늘진 부분이 거기 산다.
+            # 단 TAPE_V 아래로는 내려가지 않는다 (그 아래는 노면이라고 방금 정의했다).
+            sug_v = int(max(TAPE_V - 40, v05 - 15))
+            sug_s = int(max(cfg.white_s_max, min(120, s98 + 10)))
+            print(f'  제안: white_v_min {cfg.white_v_min} -> {sug_v}   '
+                  f'white_s_max {cfg.white_s_max} -> {sug_s}')
+            if cfg.white_v_min > v10:
+                print(f'  ⚠ 현재 V 하한({cfg.white_v_min})이 테이프 분포의 p10({v10:.0f})보다 '
+                      f'높다 — 그늘진 테이프가 잘려나가고 있다')
     else:
         print('  후보 없음 — 탐색 임계를 더 낮춰라 (--probe-white-v)')
 
