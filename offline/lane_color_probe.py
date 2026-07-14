@@ -157,18 +157,36 @@ def main():
         print(f'  유채색 후보 {H_.size}px (탐색 S>={a.probe_chroma_s} V>={a.probe_chroma_v})')
         # 파란 매트/카펫(H~100-130)을 빼고 난색 대역만 본다. 노란 테이프는 여기 없을 수 없다.
         warm = (H_ <= 45)
+        # 난색이라고 다 테이프가 아니다. 파란 카펫·노면은 **탁한** 난색 잡음을 대량으로 낸다
+        # (실측: S 61 / V 87) 반면 진짜 테이프는 밝고 진하다 (S 130 / V 145). 그 둘을 섞어
+        # 히스토그램을 그리면 잡음이 표본을 압도하고, 도구는 **노면 색에 맞춘 임계**를
+        # 자신 있게 제안한다 — 노란 테이프가 프레임에 하나도 없는 클립에서도.
+        # 그래서 테이프의 최소 조건(밝고 진하다)을 별도로 세고, 그것이 없으면 **제안하지
+        # 않는다.** 답이 없을 때 답을 지어내지 않는 것이 이 도구의 유일한 안전장치다.
+        TAPE_S, TAPE_V = 80, 120
+        tape = warm & (S_ >= TAPE_S) & (V_ >= TAPE_V)
         if warm.sum() < 50:
             print('  ⚠ 난색(H<=45) 픽셀이 거의 없다 — 이 클립에 노란 테이프가 안 찍혔거나, '
                   '노출이 눌러버렸다')
+        elif tape.sum() < 200:
+            Hn, Sn, Vn = H_[warm], S_[warm], V_[warm]
+            print(f'  난색 {warm.sum()}px 이 있지만 **테이프로 보기엔 너무 탁하다** '
+                  f'(S p50={np.median(Sn):.0f}  V p50={np.median(Vn):.0f}; '
+                  f'테이프 기준 S>={TAPE_S} V>={TAPE_V} 를 넘는 픽셀 {tape.sum()}개).')
+            print('  → **이 클립에 노란 테이프가 찍히지 않았다.** 잡은 것은 노면/카펫의 저채도 '
+                  '난색 잡음이다. 임계를 제안하지 않는다 — 여기서 나온 제안은 노면 색에 맞춘 '
+                  '것이지 테이프에 맞춘 것이 아니다.')
+            print('  → 노란 차선(중앙 점선·분기)이 **BEV 안에 들어오는** 구간을 찍어서 다시 돌려라.')
         else:
-            Hw, Sw, Vw = H_[warm], S_[warm], V_[warm]
+            Hw, Sw, Vw = H_[tape], S_[tape], V_[tape]
+            print(f'  테이프 픽셀 {tape.sum()}px (S>={TAPE_S} V>={TAPE_V} — 노면 잡음 제외)')
             h02, h50, h98 = _q(Hw, 2, 50, 98)
             s05, s50 = _q(Sw, 5, 50)
             v05, v50 = _q(Vw, 5, 50)
             print(f'  난색 {Hw.size}px:  H p02={h02:.0f} p50={h50:.0f} p98={h98:.0f}  '
                   f'S p05={s05:.0f} p50={s50:.0f}  V p05={v05:.0f} p50={v50:.0f}')
-            print('  H 히스토그램 (난색 대역):')
-            warm_hist = hist[:46]
+            print('  H 히스토그램 (테이프 픽셀만):')
+            warm_hist = np.bincount(Hw, minlength=46)[:46]
             if warm_hist.max():
                 for b in range(0, 46):
                     if warm_hist[b] * 60 // max(1, warm_hist.max()) > 0:
@@ -177,10 +195,17 @@ def main():
                               f'{"#" * int(60 * warm_hist[b] / warm_hist.max())}{mark}')
             lo = int(max(0, h02 - 4))
             hi = int(min(45, h98 + 4))
+            # S/V 하한은 **테이프 필터를 걸기 전** 분포에서 낸다. 필터가 S>=TAPE_S 를 강제해
+            # 놓고 그 결과에서 s_min 을 뽑으면 자기가 넣은 값을 자기가 다시 읽는 순환이 된다
+            # (실측: 필터 S>=80 -> 제안 s_min 80). H 대역은 위에서 확정됐으니, 이제 그 대역
+            # 안의 **모든** 후보를 보면 된다 — 색이 맞는 픽셀 중 가장 어둡고 옅은 것까지가
+            # 임계가 품어야 할 범위다.
+            band = warm & (H_ >= lo) & (H_ <= hi)
+            sb05, vb05 = _q(S_[band], 5)[0], _q(V_[band], 5)[0]
             print(f'  제안: yellow_h_lo {cfg.yellow_h_lo} -> {lo}   '
                   f'yellow_h_hi {cfg.yellow_h_hi} -> {hi}   '
-                  f'yellow_s_min {cfg.yellow_s_min} -> {int(max(30, s05 - 10))}   '
-                  f'yellow_v_min {cfg.yellow_v_min} -> {int(max(60, v05 - 10))}')
+                  f'yellow_s_min {cfg.yellow_s_min} -> {int(max(30, sb05 - 10))}   '
+                  f'yellow_v_min {cfg.yellow_v_min} -> {int(max(60, vb05 - 10))}')
             if cfg.yellow_h_lo > h02:
                 cut = (Hw < cfg.yellow_h_lo).sum() / Hw.size
                 print(f'  ⚠ 현재 H 하한({cfg.yellow_h_lo})이 난색 분포의 하단을 자른다 '
