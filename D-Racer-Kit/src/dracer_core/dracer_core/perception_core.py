@@ -1,6 +1,6 @@
 """Pure (ROS-independent) lane-detection pipeline. Single source of truth.
 
-colour -> calibrated BEV -> sliding-window multi-lane tracking -> 7-label
+colour -> calibrated BEV -> sliding-window multi-lane tracking -> 12-label
 classification -> ego corridor centerline (+ Tracker/coast).
 
 Stage order, and why (`LanePipeline.process` marks the seam):
@@ -337,11 +337,18 @@ def _ema_alpha(dt_s, tau_s):
     return 1.0 - math.exp(-dt_s / tau_s)
 
 
+# {colour}{turn}-{side}. 12 labels: 2 colours x 3 turns (S/R/L) x 2 sides.
+# Turn is the HUE, side is the SHADE (the -R of a pair is the darker one) -- so the overlay
+# reads shape first and screen-side second. Yellow keeps every colour it already had; white
+# gains the three-way split the pipeline was ALREADY computing (`_build_instance` sets
+# `turn` without looking at the colour) and simply throwing away in `classify`.
 LABEL_COLORS = {  # BGR
-    'W-L': (255, 255, 255), 'W-R': (170, 170, 170),   # white / gray
-    'YR-L': (0, 140, 255), 'YR-R': (0, 90, 200),      # orange (right turn)
-    'YL-L': (255, 0, 200), 'YL-R': (200, 0, 150),     # magenta (left turn)
-    'YS-L': (0, 230, 0), 'YS-R': (0, 150, 0),         # green (straight)
+    'WS-L': (255, 255, 255), 'WS-R': (170, 170, 170),   # white  / gray   (straight)
+    'WR-L': (255, 190, 100), 'WR-R': (200, 140, 60),    # sky blue        (right turn)
+    'WL-L': (200, 160, 255), 'WL-R': (150, 110, 200),   # pink            (left turn)
+    'YS-L': (0, 230, 0), 'YS-R': (0, 150, 0),           # green           (straight)
+    'YR-L': (0, 140, 255), 'YR-R': (0, 90, 200),        # orange          (right turn)
+    'YL-L': (255, 0, 200), 'YL-R': (200, 0, 150),       # magenta         (left turn)
 }
 EGO_CENTER_COLOR = (255, 255, 0)   # cyan — ego corridor centerline (control value)
 # A corridor's boundaries are always ONE colour (`pair_same_color`), and that colour is the
@@ -540,7 +547,7 @@ def sliding_window_lanes(mask, color, c, windows_out=None):
 
 
 # ==========================================================================
-# D: classification (7 labels)
+# D: classification (12 labels: {W,Y} x {S,R,L} x {L,R})
 # ==========================================================================
 def _side(ins, w):
     cx = w / 2.0
@@ -553,11 +560,23 @@ def _side(ins, w):
 
 
 def classify(ins, w):
+    """{colour}{turn}-{side}  ->  WS-L, WR-R, YL-L, ...
+
+    Yellow's S/R/L split is unchanged -- `ins['turn']` (set in `_build_instance` from the
+    fit's lateral drift, `heading_frac`, with `curv_strong` as the fallback) is what said
+    YS / YR / YL, and it is what says WS / WR / WL now. White was the ONLY thing standing
+    between this and 12 labels: `classify` branched on the colour and returned `W-{side}`,
+    dropping a `turn` that had already been computed for it -- `_build_instance` never looks
+    at the colour.
+
+    Nothing ACTS on the label. `lane_centers` / `ego_center` / `choose_branch` / `Tracker`
+    all read the raw instance (coeffs, x_bottom, colour), so this is what the overlay draws
+    and what the log says, and that is the point -- it is what lets a human see WHICH white
+    line is which when four of them are in frame.
+    """
     side = _side(ins, w)
-    if ins['color'] == 'W':
-        return f'W-{side}'
     tw = 'S' if ins['turn'] == 0 else ('R' if ins['turn'] > 0 else 'L')
-    return f'Y{tw}-{side}'
+    return f"{ins['color']}{tw}-{side}"
 
 
 # ==========================================================================
@@ -1346,7 +1365,7 @@ class LanePipeline:
 
         state = {
             'center_error': center_error, 'ema': ema,
-            'heading': heading, 'heading_label': 'lane7',
+            'heading': heading, 'heading_label': 'lane12',
             'confidence': confidence, 'left_conf': left_conf,
             'right_conf': right_conf, 'curvature': curvature,
             'state': fstate, 'used_fallback': used_fb,
