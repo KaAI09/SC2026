@@ -40,3 +40,7 @@ offline/calib/
 runs/
 artifacts/
 datasets/
+
+# 로컬 전용 (원격에 올리지 않는다)
+.superpowers/
+docs/superpowers/
