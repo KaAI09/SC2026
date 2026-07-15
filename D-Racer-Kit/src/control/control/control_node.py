@@ -55,7 +55,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rcl_interfaces.msg import SetParametersResult
-from dracer_msgs.msg import Control
+from dracer_msgs.msg import Control, ControlConfig
 from dracer_msgs.msg import Joystick
 from dracer_msgs.msg import LaneState
 from dracer_msgs.msg import MissionState
@@ -184,6 +184,9 @@ class ControlNode(Node):
             self.create_subscription(MissionState, str(gp('mission_topic').value),
                                      self.mission_callback, 10)
         self.control_pub = self.create_publisher(Control, control_topic, 10)
+        from rclpy.qos import QoSProfile, DurabilityPolicy
+        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.config_pub = self.create_publisher(ControlConfig, '/control/config', latched)
         self.timer = self.create_timer(1.0 / self.publish_rate, self.publish_cmd)
 
         self.get_logger().warning(
@@ -217,7 +220,27 @@ class ControlNode(Node):
         def val(name):
             return ov[name] if name in ov else gp(name).value
         kw = {k: float(val(k)) for k in _CTRL_FLOATS}
+        self._publish_config({**kw, 'controller': str(val('controller'))})
         return Controller(make_ctrl(str(val('controller')), **kw)), kw['conf_gate']
+
+    def _publish_config(self, kw):
+        """Publish the just-built controller's active params on the latched
+        /control/config topic. kw is _CTRL_FLOATS (+ 'controller') as built in
+        _build_controller. Guarded because _build_controller's first call happens
+        during __init__ before config_pub exists (self.controller assignment
+        precedes the publisher creation)."""
+        if not hasattr(self, 'config_pub'):
+            return
+        m = ControlConfig()
+        m.controller = str(kw.get('controller', 'PD'))
+        for f in ('kp', 'kd', 'throttle_base', 'throttle_min', 'slew_rate_per_sec',
+                  'steer_max', 'conf_gate', 'curv_slow'):
+            setattr(m, f, float(kw.get(f, 0.0)))
+        m.x_half_cm = float(self._x_half_cm())
+        self.config_pub.publish(m)
+
+    def _x_half_cm(self):
+        return 29.0   # camera.yaml 의 bev.x_half_cm. control_node 는 calib 을 로드하지 않으므로 상수.
 
     def _on_set_params(self, params):
         """Live: rebuild the controller when any control param is set."""
