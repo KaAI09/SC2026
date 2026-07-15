@@ -13,6 +13,9 @@ perception:
   yellow_s_min: 65          #   (실측 S p05 = 85)
   yellow_v_min: 100         #   (실측 V p05 = 133)
   lane_width_cm: 34.8       # 실측. 서로 다른 두 캘리브가 독립적으로 34.76 / 34.78 을 냈다
+  use_fork: true            # 갈림길(W-W (L,R) 섬) 감지 시 표지판 hint 대로 한쪽 corridor 선택.
+                            #   실차 param set 을 기본값으로 확정. (L,R) 반대곡률이 하드 필수라
+                            #   일반 곡선(같은방향 벽)은 fork 로 안 잡힘.
 
 control:
   controller: PD            # PD | PID. 모르는 이름은 예외를 던진다 (조용한 폴백 없음)
