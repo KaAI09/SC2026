@@ -6,6 +6,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from dracer_core.perception_core import classify  # noqa: E402
 from dracer_core.perception_core import lane_centers, Cfg, LanePipeline  # noqa: E402
+from dracer_core.perception_core import ego_center  # noqa: E402
 from dracer_core.calib import CameraModel  # noqa: E402
 import numpy as np  # noqa: E402
 
@@ -59,6 +60,37 @@ def test_fork_island_lr_flagged():
     isl = [x for x in cors if x.get('is_fork')]
     assert isl and isl[0]['fork_type'] == 'island'
     assert isl[0]['turn_pair'] == ('L', 'R')
+
+
+def test_fork_avoid_left_shifts_outward():
+    c = Cfg(); c.use_fork = True; c.fork_spread_min = 100.0
+    c.pair_same_color = True; c.pair_parallel = 0.0
+    c.pair_gap_min = 0.0; c.pair_width_tol = 0.0; c.pair_overlap_min = 0.0
+    # right x0=180 (not 172): gap(y) = 120 - 0.6*(188-y), min 7.2 at y=0 -- stays >= 0 so
+    # pair_gap_min=0.0 does not reject the pair (172 dips to -0.8 and is rejected outright,
+    # producing zero corridors regardless of ego_center). lane_w_px=0.0 disables the
+    # physical-width match (same convention as test_fork_island_lr_flagged) since
+    # pair_width_tol=0.0 demands an exact match this fixture's ~56px mean gap cannot give.
+    left = _line('W', 60.0, +0.30, -1)     # 섬 왼모서리
+    right = _line('W', 180.0, -0.30, +1)   # 섬 오른모서리
+    cors = lane_centers([left, right], 232, 189, c, lane_w_px=0.0)
+    width = 139.0
+    # LEFT: 왼모서리를 near, -반차폭 → 섬 왼쪽. x_bottom 이 섬 왼모서리보다 더 왼쪽이어야
+    ec = ego_center(cors, [left, right], 232, width, mL=None, mR=None,
+                    axis=116.0, c=c, mask=None, margin=0.0, hint='L')
+    assert ec is not None and ec['rule'] == 'fork_L'
+    assert ec['x_bottom'] < left['x_bottom']     # 섬 바깥(왼쪽)으로 나갔다
+
+
+def test_fork_off_is_keep():
+    c = Cfg(); c.use_fork = False; c.fork_spread_min = 100.0
+    c.pair_same_color = True; c.pair_parallel = 0.0
+    c.pair_gap_min = 0.0; c.pair_width_tol = 0.0; c.pair_overlap_min = 0.0
+    left = _line('W', 60.0, +0.30, -1); right = _line('W', 180.0, -0.30, +1)
+    cors = lane_centers([left, right], 232, 189, c, lane_w_px=0.0)
+    ec = ego_center(cors, [left, right], 232, 139.0, None, None, 116.0, c, None, 0.0, hint='L')
+    # use_fork off → 회피 안 함(fork_L 아님). keep/coast/None 중 하나.
+    assert ec is None or ec.get('rule') != 'fork_L'
 
 
 def test_pipeline_set_branch_hint():

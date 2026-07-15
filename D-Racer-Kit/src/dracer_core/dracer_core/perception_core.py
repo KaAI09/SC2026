@@ -133,6 +133,7 @@ class Cfg:
     fork_spread_min_cm: float = 25.0  # 이 이상 벌어진 (L,R) corridor 만 갈림길(섬)로 본다.
                                       # 일반주행 (L,R) 오검출 spread p50 17.9 vs 갈림길 34.
     fork_spread_min: float = 0.0      # DERIVED from fork_spread_min_cm by cfg_to_px. Do not set.
+    use_fork: bool = False   # 갈림길 회피 조향 게이트. off 면 감지/발행만, 조향은 main 과 동일.
     ego_tol: float = 0.6         # a corridor is the EGO corridor if its centreline sits within
                                  # this many lane widths of the vehicle axis. 0.5 = "the axis is
                                  # strictly inside it"; 0.6 leaves slack for a car running wide.
@@ -827,7 +828,7 @@ def choose_branch(centers, cx, c, rng):
 
 
 def ego_center(centers, lanes, w, width, mL=None, mR=None, axis=None, c=None,
-               mask=None, margin=0.0):
+               mask=None, margin=0.0, hint=None):
     """Ego corridor centreline: a real left/right pair, else COAST off one boundary.
 
     `mL`/`mR` are the Tracker's picks for this frame. Prefer them EVERYWHERE — for choosing
@@ -838,6 +839,24 @@ def ego_center(centers, lanes, w, width, mL=None, mR=None, axis=None, c=None,
     the car. That is what produced the sign reversals: 96 of them, 80% while coasting, and the
     steering command pointed INTO the lane instead of away from it (§6c/§6e, §7.4 f250).
     """
+    # 갈림길 회피: use_fork + 섬 감지 + 표지판. coast 메커니즘 재사용하되 dx 부호는 '바깥'.
+    if c is not None and getattr(c, 'use_fork', False) and hint in ('L', 'R'):
+        cxv = w / 2.0 if axis is None else float(axis)
+        islands = [cc for cc in (centers or []) if cc.get('fork_type') == 'island']
+        if islands and width > 0:
+            isl = max(islands, key=lambda cc: cc.get('spread', 0.0))
+            if hint == 'L':
+                near, dx, rule = isl['a'], -width / 2.0, 'fork_L'   # 왼모서리 → 섬 바깥 왼쪽
+            else:
+                near, dx, rule = isl['b'], +width / 2.0, 'fork_R'   # 오른모서리 → 섬 바깥 오른쪽
+            if near.get('coeffs') is not None:
+                coeffs = _shift(near['coeffs'], dx)
+                xb = near['x_bottom'] + dx
+                return {'coeffs': coeffs, 'x_bottom': xb, 'offset': xb - cxv,
+                        'ego': True, 'a': near, 'b': None, 'coast': True, 'flipped': False,
+                        'rule': rule, 'fork_type': 'island',
+                        'y_lo': float(near['ys'].min()), 'y_hi': float(near['ys'].max())}
+
     cx = w / 2.0 if axis is None else float(axis)
     ego_tol = (c.ego_tol if c is not None else 0.75)
 
@@ -1369,7 +1388,8 @@ class LanePipeline:
         # through into `ego_center`, which then returned None on `width <= 0`. Belt and braces:
         # `_measure_width` can no longer produce one, and this can no longer pass one on.
         width = self.trk.width if (self.trk.width and self.trk.width > 0) else c.lane_width_default * w
-        ec = ego_center(centers, lanes, w, width, mL, mR, axis, c, mask, c.sw_margin)
+        ec = ego_center(centers, lanes, w, width, mL, mR, axis, c, mask, c.sw_margin,
+                        hint=self._branch_hint)
 
         # If the ego corridor is a REAL pair that is not the one the tracker was following,
         # the tracker was following the wrong thing. Take the proven identity (see adopt()).

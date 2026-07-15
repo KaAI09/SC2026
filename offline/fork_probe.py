@@ -33,3 +33,22 @@ if __name__ == '__main__':
               'offline/rslt/07142315/raw/drive_20260714_141332.mp4']
     h, n = rate(fork, cam, c0);   print(f'갈림길 클립  island 감지율: {h}/{n} = {100*h/n:.1f}%')
     h, n = rate(normal, cam, c0); print(f'일반주행    island 오검출: {h}/{n} = {100*h/n:.1f}%  (목표 <1%)')
+
+    # 회피 타겟: use_fork on 으로 갈림길 클립 재생, fork_* rule 프레임 수와 타겟 방향
+    c0.use_fork = True
+    from dracer_core.perception_core import LanePipeline as LP
+    for clip in fork:
+        cap = cv2.VideoCapture(clip); pipe = LP(c0, cam)
+        # 표지판 hint 를 강제(오프라인엔 mission 노드 없음): 클립 이름으로
+        pipe.set_branch_hint('L' if '081354' in clip else 'R')
+        fr = 0
+        while True:
+            ok, f = cap.read()
+            if not ok:
+                break
+            pipe.set_branch_hint('L' if '081354' in clip else 'R')  # 매 프레임 유지
+            st, _ = pipe.process(f, 1 / 30.0, debug=True)
+            if str(st.get('ego_rule', '')).startswith('fork_'):
+                fr += 1
+        cap.release()
+        print(f'{os.path.basename(clip)}: fork_ 조향 프레임 {fr}')
