@@ -200,14 +200,14 @@ class RecorderNode(Node):
         row = [round(frame_t, 4)]
         if s is not None:
             row += [
-                int(s.valid), _f(s.center_error), _f(s.ema),
+                int(s.valid), _f(s.center_error), _f(s.center_error_cm), _f(s.ema),
                 int(s.heading_valid), _f(s.heading), round(float(s.confidence), 3),
                 round(float(s.left_conf), 3), round(float(s.right_conf), 3),
                 s.state, int(s.used_fallback),
                 int(s.n_corridors), s.ego_rule,
             ]
         else:
-            row += ['', '', '', '', '', '', '', '', '', '', '', '']
+            row += ['', '', '', '', '', '', '', '', '', '', '', '', '']
         # Mission runs on every (frame_skip+1)-th frame, so this is the LATEST result, held
         # across the frames it did not run on -- at most `mission_skip` frames old. It is not
         # resampled to the main stream and does not pretend to be: `mission_cls` repeating
@@ -232,7 +232,7 @@ class RecorderNode(Node):
             self._csv_file = open(path, 'w', newline='', encoding='utf-8')
             self._csv_writer = csv.writer(self._csv_file)
             self._csv_writer.writerow([
-                'frame_time', 'valid', 'center_error', 'ema', 'heading_valid',
+                'frame_time', 'valid', 'center_error', 'center_error_cm', 'ema', 'heading_valid',
                 'heading', 'confidence', 'left_conf', 'right_conf', 'state',
                 'used_fallback', 'n_corridors', 'ego_rule',
                 # mission_cls  = CONFIRMED (M-of-N debounced) class, -1 = none.
