@@ -222,9 +222,12 @@ class MissionCfg:
                                          # measure |lean| 0.19-0.28, so 0.08 refuses only
                                          # genuinely ambiguous blobs. LOWER -> decides on
                                          # weaker arrows (risks flips)
-    sign_invert: bool = False            # VENUE ESCAPE HATCH: if the arrow style makes
-                                         # RIGHT/LEFT come out swapped, set true (yaml) to
-                                         # flip 3<->4 -- no arrow-logic tinkering needed
+    sign_invert: bool = True             # ★ 이 대회장 화살표 스타일은 lean 부호가 반대다.
+                                         # 실측(offline/rslt/mission_023137 vs 023352): invert off 면
+                                         # RIGHT 를 전부 4(LEFT)로 오독 → 무조건 좌회전. invert on 에서
+                                         # 3(RIGHT)/4(LEFT) 둘 다 정상(det_conf 0.76~0.94).
+                                         # VENUE ESCAPE HATCH: 다른 대회장에서 다시 뒤집히면 false.
+                                         # (`ros2 param set /perception_node sign_invert <bool>`)
 
     # --- debounce / confidence (M-of-N: tolerates dropped frames) ---
     confirm_n: int = 5                    # window: the last N PROCESSED frames considered

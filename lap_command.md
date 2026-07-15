@@ -90,6 +90,28 @@ ros2 topic echo /control
 > 회피는 **표지판을 본 뒤 12프레임(약 0.4초) 안에 섬이 나타날 때만** 작동한다(sign_live_hold).
 > `/mission/state` cls 가 3/4 로 뜬 직후 `/lane/state` ego_rule 을 같이 본다.
 
+### C-2. 로그를 txt 로 저장 (rslt 폴더, 사후 분석용)
+
+`tee` 는 화면에 보여주며 파일에도 줄 단위로 바로 쓴다(`>` 만 쓰면 버퍼링돼 늦게 써진다). Ctrl+C 로 종료.
+
+```bash
+# 미션 전체(header 타임스탬프 + cls + det_cls) — 표지판 검출 분석
+ros2 topic echo /mission/state | tee ~/SC2026/offline/rslt/mission_$(date +%H%M%S).txt
+
+# det_cls(순간 검출) + 실시간 시각 — 표지판 바꾼 시점 대조
+ros2 topic echo /mission/state --field det_cls \
+  | while read l; do echo "$(date +%T) $l"; done \
+  | tee ~/SC2026/offline/rslt/detcls_$(date +%H%M%S).txt
+
+# 조향 규칙 + 시각 — 검출→조향 대조
+ros2 topic echo /lane/state --field ego_rule \
+  | while read l; do echo "$(date +%T) $l"; done \
+  | tee ~/SC2026/offline/rslt/ego_$(date +%H%M%S).txt
+```
+
+> det_cls 분포는 `rg '^det_cls:' <파일> | sort | uniq -c` 로 센다.
+> (실측: invert off 는 RIGHT 를 전부 4 로 오독, invert on 은 3/4 정상 — §E sign_invert 참고.)
+
 ---
 
 ## D. engage / 안전
@@ -112,5 +134,6 @@ ros2 param set /control_node engage false     # 또는 조이스틱 X (E-STOP)
 | camera.yaml | 29cm | 42cm 는 center_error 0.69배 축소 → 조향 약화. 쓰지 않는다 |
 | kp / kd | 1.4 / 0.14 | 교차로 실차 성공값 |
 | colors | [white] | ⚠ 노랑 OFF(임시) — 노란 인코스 오판 방지. 되돌리려면 [white, yellow] |
+| sign_invert | **true (기본)** | 이 대회장 화살표 스타일. RIGHT/LEFT 정상. 다른 대회장서 뒤집히면 `param set /perception_node sign_invert false` |
 | use_fork | off (기본) | param 으로 켠다 |
 | mission_gate | off (기본) | launch 인자로 켠다 |
