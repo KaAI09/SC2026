@@ -222,11 +222,11 @@ class MissionCfg:
                                          # measure |lean| 0.19-0.28, so 0.08 refuses only
                                          # genuinely ambiguous blobs. LOWER -> decides on
                                          # weaker arrows (risks flips)
-    sign_invert: bool = True             # ★ 이 대회장 화살표 스타일은 lean 부호가 반대다.
-                                         # 실측(offline/rslt/mission_023137 vs 023352): invert off 면
-                                         # RIGHT 를 전부 4(LEFT)로 오독 → 무조건 좌회전. invert on 에서
-                                         # 3(RIGHT)/4(LEFT) 둘 다 정상(det_conf 0.76~0.94).
-                                         # VENUE ESCAPE HATCH: 다른 대회장에서 다시 뒤집히면 false.
+    sign_invert: bool = False            # 이 대회장은 _arrow_direction 원본이 정확하다.
+                                         # 실측(좌회전.txt / 우회전.txt, invert ON 상태에서 각각 촬영):
+                                         # 좌회전→det_cls 3, 우회전→4 로 둘 다 반대 오독 → invert OFF 가 정답.
+                                         # 즉 원본(false)은 좌회전→4(LEFT), 우회전→3(RIGHT) 정상.
+                                         # VENUE ESCAPE HATCH: 다른 대회장서 뒤집히면 true.
                                          # (`ros2 param set /perception_node sign_invert <bool>`)
 
     # --- debounce / confidence (M-of-N: tolerates dropped frames) ---
