@@ -101,3 +101,80 @@ def saturation_rates(rows, params):
                 hit += 1
     slew_sat = float(hit / n_slew) if n_slew else float('nan')
     return {'steer_sat': steer_sat, 'slew_sat': slew_sat}
+
+
+def suggest_kp(e_ss_cm, u_ss, x_half_cm, target_cm):
+    """e_ss 를 target_cm 이하로 만드는 kp. u_ss·x_half/target. u_ss 불명이면 None."""
+    if not (np.isfinite(u_ss) and np.isfinite(x_half_cm) and target_cm > 0):
+        return None
+    return float(abs(u_ss) * x_half_cm / target_cm)
+
+
+def diagnose(rows, params, segments, target_cm=17.4, osc_thresh=5.0,
+             steer_sat_thresh=0.10, slew_sat_thresh=0.10):
+    """모든 지표 계산 + throttle 병목 식별 + kp 제안."""
+    ce = curve_error(rows, segments)
+    osc = oscillation_index(rows, segments)
+    sat = saturation_rates(rows, params)
+    binding = []
+    if np.isfinite(ce['e_ss_cm']) and ce['e_ss_cm'] > target_cm:
+        binding.append('e_ss')          # 곡선 이탈 → kp 부족/속도 과다
+    if np.isfinite(osc) and osc > osc_thresh:
+        binding.append('oscillation')   # 저감쇠 → kd 부족/kp 과다
+    if np.isfinite(sat['steer_sat']) and sat['steer_sat'] > steer_sat_thresh:
+        binding.append('steer_sat')     # 조향 포화 → 코너속도 하드리밋
+    if np.isfinite(sat['slew_sat']) and sat['slew_sat'] > slew_sat_thresh:
+        binding.append('slew_sat')      # 조향속도 병목
+    kp_new = (suggest_kp(ce['e_ss_cm'], ce['u_ss'], params.get('x_half_cm', 29.0), target_cm)
+              if 'e_ss' in binding else None)
+    return {'throttle_base': params.get('throttle_base'), 'kp': params.get('kp'),
+            'kd': params.get('kd'), 'e_ss_cm': ce['e_ss_cm'], 'u_ss': ce['u_ss'],
+            'curve_n': ce['n'], 'oscillation': osc, 'steer_sat': sat['steer_sat'],
+            'slew_sat': sat['slew_sat'], 'binding': binding, 'suggest_kp': kp_new}
+
+
+def _parse_overrides(pairs):
+    ov = {}
+    for kv in pairs:
+        k, _, v = kv.partition('=')
+        try:
+            ov[k] = float(v)
+        except ValueError:
+            ov[k] = v
+    return ov
+
+
+def cmd_run(a):
+    rows = cm.read_csv(os.path.expanduser(a.csv))
+    segments = []
+    if a.segments:
+        from bev_eval import parse_segments
+        segments = parse_segments(a.segments)
+    params = load_params(os.path.expanduser(a.csv), _parse_overrides(a.params))
+    d = diagnose(rows, params, segments, target_cm=a.target_cm)
+    print(cm.clip_name(a.csv), '|', f"throttle={d['throttle_base']} kp={d['kp']} kd={d['kd']}"
+          + ('  ⚠ 사이드카 없음(파라미터 추정)' if params.get('_no_sidecar') else ''))
+    print(f"  곡선 e_ss {d['e_ss_cm']:.1f}cm (n={d['curve_n']}, u_ss {d['u_ss']:.2f}) | "
+          f"진동 {d['oscillation']:.1f}/s | 조향포화 {100*d['steer_sat']:.1f}% | "
+          f"slew포화 {100*d['slew_sat']:.1f}%")
+    print(f"  병목: {', '.join(d['binding']) if d['binding'] else '없음(여유 있음)'}")
+    if d['suggest_kp']:
+        print(f"  권장 kp {d['kp']} → {d['suggest_kp']:.2f} (e_ss 를 {a.target_cm:.1f}cm 이하로)")
+    return d, params
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('csv')
+    ap.add_argument('--segments', default='')
+    ap.add_argument('--target-cm', dest='target_cm', type=float, default=17.4)
+    ap.add_argument('--params', action='append', default=[], metavar='K=V',
+                    help='사이드카 없을 때 파라미터 수동 지정 (반복 가능)')
+    ap.add_argument('--no-log', action='store_true', help='누적 로그 append 생략')
+    a = ap.parse_args()
+    cmd_run(a)
+
+
+if __name__ == '__main__':
+    main()

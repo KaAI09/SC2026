@@ -4,7 +4,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 from ctrl_feedback import (curve_error, load_params, DEFAULT_PARAMS,   # noqa: E402 (교체)
-                           oscillation_index, saturation_rates)
+                           oscillation_index, saturation_rates,
+                           suggest_kp, diagnose)
 
 
 def _row(t, ce_cm, steer):
@@ -46,6 +47,23 @@ def test_saturation_rates():
     r = saturation_rates(rows, p)
     assert abs(r['steer_sat'] - 2 / 3) < 1e-9, r
     assert abs(r['slew_sat'] - 1 / 2) < 1e-9, r    # 전환 2개 중 1개가 slew 한계 초과
+
+
+def test_suggest_kp():
+    # u_ss=0.5, x_half=29, target=17.4 → kp = 0.5*29/17.4 = 0.8333...
+    kp = suggest_kp(e_ss_cm=25.0, u_ss=0.5, x_half_cm=29.0, target_cm=17.4)
+    assert abs(kp - 0.5 * 29.0 / 17.4) < 1e-9, kp
+    # u_ss NaN 이면 제안 불가 → None
+    assert suggest_kp(25.0, float('nan'), 29.0, 17.4) is None
+
+
+def test_diagnose_binding_ess():
+    p = dict(DEFAULT_PARAMS)
+    # 커브에서 e_ss 25cm(>17.4=반폭) → binding 에 'e_ss' 포함
+    rows = [_row(0.0, 25.0, 0.40), _row(0.03, 25.0, 0.42), _row(0.06, 25.0, 0.40)]
+    d = diagnose(rows, p, segments=[], target_cm=17.4)
+    assert 'e_ss' in d['binding'], d
+    assert d['suggest_kp'] is not None, d
 
 
 if __name__ == '__main__':
