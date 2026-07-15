@@ -3,7 +3,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from bev_eval import scale_stats  # noqa: E402
+from bev_eval import scale_stats, coast_transitions  # noqa: E402
 
 
 def test_scale_stats_ratio():
@@ -21,6 +21,27 @@ def test_scale_stats_skips_small_and_nan():
     s = scale_stats(a, b)
     assert s['n'] == 1, s
     assert abs(s['ratio_median'] - 2.0) < 1e-9, s
+
+
+def _st(cm_cm, coast, both):
+    return {'center_error_cm': cm_cm, 'used_fallback': coast,
+            'left_conf': 1.0 if both else 0.0, 'right_conf': 1.0 if both else 0.0}
+
+
+def test_coast_transition_error():
+    states = [_st(5.0, True, False),    # coast
+              _st(6.2, False, True)]    # → pair, 답 6.2 vs 직전 5.0 = 1.2cm
+    tr = coast_transitions(states)
+    assert len(tr) == 1, tr
+    assert abs(tr[0]['err_cm'] - 1.2) < 1e-9, tr
+    assert tr[0]['side_flip'] is False, tr
+
+
+def test_coast_side_flip():
+    states = [_st(-20.0, True, False),  # coast 는 좌(-)
+              _st(19.0, False, True)]   # pair 는 우(+), |Δ|=39>17.4 & 부호반전 → flip
+    tr = coast_transitions(states)
+    assert len(tr) == 1 and tr[0]['side_flip'] is True, tr
 
 
 if __name__ == '__main__':

@@ -101,6 +101,42 @@ def cmd_compare(a):
     print(f'    → 0 근처면 cm 값은 calib 불변 = 디커플링이 유효함을 확정.')
 
 
+# ------------------------------------------------------------------ coast
+def coast_transitions(states, half_lane_cm=17.4):
+    """coast→pair 전환에서 직전 coast 중앙(cm)과 직후 pair 중앙(cm)의 차 = coast 오차.
+    부호가 반대이고 |Δ|>half_lane 이면 side 뒤집힘으로 본다(핸드오프 설계)."""
+    out = []
+    for i in range(1, len(states)):
+        prev, cur = states[i - 1], states[i]
+        p_cm, c_cm = prev.get('center_error_cm'), cur.get('center_error_cm')
+        was_coast = bool(prev.get('used_fallback')) and p_cm is not None
+        now_pair = (prev is not None and cur.get('left_conf') == 1.0
+                    and cur.get('right_conf') == 1.0 and c_cm is not None
+                    and not cur.get('used_fallback'))
+        if was_coast and now_pair:
+            err = abs(c_cm - p_cm)
+            flip = bool(c_cm * p_cm < 0 and err > half_lane_cm)
+            out.append({'i': i, 'err_cm': float(err), 'side_flip': flip})
+    return out
+
+
+def cmd_coast(a):
+    cfg = load_cfg(a.profile)
+    cam = CameraModel.load(os.path.expanduser(a.camera))
+    states = [st for _, st, _ in replay(a.raw, cam, cfg)]
+    tr = coast_transitions(states)
+    if not tr:
+        print(f'{cm.clip_name(a.raw)}: coast→pair 전환 없음 (n_frames={len(states)})')
+        return
+    errs = np.array([t['err_cm'] for t in tr])
+    flips = sum(t['side_flip'] for t in tr)
+    print(f'{cm.clip_name(a.raw)}: 전환 {len(tr)}회')
+    print(f'  coast 오차 cm  p50 {np.percentile(errs,50):.2f}  p90 '
+          f'{np.percentile(errs,90):.2f}  >10cm {100*np.mean(errs>10):.1f}%')
+    print(f'  side 뒤집힘 {flips}회 ({100*flips/len(tr):.1f}%)')
+    print('  ⚠ 낙관 편향: 양쪽 보이던 프레임 기준이라 실제 coast 보다 유리하게 나옴.')
+
+
 # ----------------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
@@ -113,6 +149,12 @@ def main():
     p.add_argument('--camera-b', dest='camera_b', required=True)
     p.add_argument('--profile', default='')
     p.set_defaults(func=cmd_compare)
+
+    pc = sub.add_parser('coast', help='coast→pair 전환 진지 오차')
+    pc.add_argument('raw')
+    pc.add_argument('--camera', required=True)
+    pc.add_argument('--profile', default='')
+    pc.set_defaults(func=cmd_coast)
 
     a = ap.parse_args()
     a.func(a)
