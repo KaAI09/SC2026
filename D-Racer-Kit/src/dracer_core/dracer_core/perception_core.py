@@ -1409,12 +1409,14 @@ class LanePipeline:
 
         if ec is not None:
             center_error = float(ec['offset'] / (w / 2))
+            center_error_cm = float(ec['offset'] / self.cam.px_per_cm)  # calib 불변 물리오차(cm)
             y_lo, y_hi = ec.get('y_lo', 0), ec.get('y_hi', h - 1)
             heading = _heading_deg(ec['coeffs'], y_lo, y_hi)
             curvature = float(ec['coeffs'][0] * 1000.0)
             confidence = 0.5 if ec.get('coast') else 0.9
         else:
             center_error = heading = curvature = None
+            center_error_cm = None
             confidence = 0.0
         left_conf = 1.0 if mL is not None else 0.0
         right_conf = 1.0 if mR is not None else 0.0
@@ -1423,7 +1425,7 @@ class LanePipeline:
         ema, fstate = self.stab.update(center_error, confidence, dt_s)
 
         state = {
-            'center_error': center_error, 'ema': ema,
+            'center_error': center_error, 'center_error_cm': center_error_cm, 'ema': ema,
             'heading': heading, 'heading_label': 'lane12',
             'confidence': confidence, 'left_conf': left_conf,
             'right_conf': right_conf, 'curvature': curvature,
