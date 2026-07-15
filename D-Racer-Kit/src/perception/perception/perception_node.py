@@ -477,6 +477,10 @@ class PerceptionNode(Node):
         m.ego_rule = str(s['ego_rule'])
         m.fork_type = str(s.get('fork_type', '') or '')
         m.n_islands = int(s.get('n_islands', 0))
+        # sign→branch 진단: 방향 힌트를 그대로 기록(로직 변화 없음). set_branch_hint 이 쓰는
+        # 것과 같은 self._sign / self._sign_age 를 노출한다. 유효 여부는 소비측이 age 로 판정.
+        m.sign_hint = self._sign or ''
+        m.sign_hint_age = int(self._sign_age)
         self.state_pub.publish(m)
 
     def _publish_mission(self, stamp, newly):

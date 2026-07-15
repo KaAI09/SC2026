@@ -38,3 +38,9 @@ string  ego_rule         # which rule chose the ego corridor:
 # --- fork evidence (12-label judgment) --------------------------------------
 string  fork_type        # '' | island(W-W (L,R)) | branch(그 외 분기). 감지, 회피는 use_fork
 uint8   n_islands        # 이 프레임 island 로 감지된 corridor 수
+
+# --- sign→branch 진단 (기록 전용, 표지판 방향이 실제로 래치·투입됐는지 추적) ---------
+# 우회전 표지판 미대처 진단용. perception_node 내부의 방향 힌트를 그대로 노출한다.
+# 유효(투입) 여부는 sign_hint_age <= sign_live_hold 로 판정(제어엔 영향 없음).
+string  sign_hint        # '' | 'L' | 'R' — 마지막으로 확정된 표지판 방향(RIGHT=R/LEFT=L)
+int32   sign_hint_age    # 그 방향이 확정된 뒤 지난 프레임 수. age > sign_live_hold 면 만료(미투입)

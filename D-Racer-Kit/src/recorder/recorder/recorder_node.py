@@ -212,9 +212,11 @@ class RecorderNode(Node):
                 round(float(s.left_conf), 3), round(float(s.right_conf), 3),
                 s.state, int(s.used_fallback),
                 int(s.n_corridors), s.ego_rule,
+                s.fork_type, int(s.n_islands), s.sign_hint, int(s.sign_hint_age),
             ]
         else:
-            row += ['', '', '', '', '', '', '', '', '', '', '', '', '']
+            row += ['', '', '', '', '', '', '', '', '', '', '', '', '',
+                    '', '', '', '']
         # Mission runs on every (frame_skip+1)-th frame, so this is the LATEST result, held
         # across the frames it did not run on -- at most `mission_skip` frames old. It is not
         # resampled to the main stream and does not pretend to be: `mission_cls` repeating
@@ -254,6 +256,9 @@ class RecorderNode(Node):
                 'frame_time', 'valid', 'center_error', 'center_error_cm', 'ema', 'heading_valid',
                 'heading', 'confidence', 'left_conf', 'right_conf', 'state',
                 'used_fallback', 'n_corridors', 'ego_rule',
+                # sign→branch 진단 체인: fork_type/n_islands = 이 프레임 갈림길 감지(축 B),
+                # sign_hint/sign_hint_age = 래치된 표지판 방향과 나이(축 A→hint 투입 여부).
+                'fork_type', 'n_islands', 'sign_hint', 'sign_hint_age',
                 # mission_cls  = CONFIRMED (M-of-N debounced) class, -1 = none.
                 # mission_det_* = the RAW top detection of that frame, with its camera-pixel
                 # box. Both, because only the pair distinguishes "nothing was there" from
