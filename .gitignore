@@ -44,3 +44,6 @@ datasets/
 # 로컬 전용 (원격에 올리지 않는다)
 .superpowers/
 docs/superpowers/
+
+# ctrl_feedback 누적 로그 (런타임 산출물, 로컬 전용)
+offline/ctrl_feedback_log.csv
