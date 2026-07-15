@@ -133,6 +133,43 @@ def diagnose(rows, params, segments, target_cm=17.4, osc_thresh=5.0,
             'slew_sat': sat['slew_sat'], 'binding': binding, 'suggest_kp': kp_new}
 
 
+_LOG_COLS = ['session', 'throttle_base', 'kp', 'kd', 'e_ss_cm', 'u_ss',
+             'oscillation', 'steer_sat', 'slew_sat', 'binding', 'suggest_kp']
+
+
+def append_log(log_path, session, diag):
+    """누적 로그에 1행 append(없으면 헤더 생성). throttle↔파라미터 A/B 데이터셋."""
+    import csv as _csv
+    new = not os.path.exists(log_path)
+    with open(log_path, 'a', newline='', encoding='utf-8') as f:
+        w = _csv.writer(f)
+        if new:
+            w.writerow(_LOG_COLS)
+        w.writerow([session, diag['throttle_base'], diag['kp'], diag['kd'],
+                    diag['e_ss_cm'], diag['u_ss'], diag['oscillation'],
+                    diag['steer_sat'], diag['slew_sat'], '|'.join(diag['binding']),
+                    diag['suggest_kp'] if diag['suggest_kp'] is not None else ''])
+
+
+def fit_throttle_trend(log_rows, metric='steer_sat', limit=0.3):
+    """throttle_base vs metric 선형 피팅(점≥3). metric 이 limit 도달하는 throttle 추정."""
+    xs, ys = [], []
+    for r in log_rows:
+        try:
+            x, y = float(r['throttle_base']), float(r[metric])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if np.isfinite(x) and np.isfinite(y):
+            xs.append(x)
+            ys.append(y)
+    if len(xs) < 3:
+        return {'n': len(xs), 'slope': None, 'throttle_at_limit': None}
+    slope, intercept = np.polyfit(xs, ys, 1)
+    t_lim = ((limit - intercept) / slope) if slope != 0 else None
+    return {'n': len(xs), 'slope': float(slope),
+            'throttle_at_limit': float(t_lim) if t_lim is not None else None}
+
+
 def _parse_overrides(pairs):
     ov = {}
     for kv in pairs:
@@ -158,8 +195,20 @@ def cmd_run(a):
           f"진동 {d['oscillation']:.1f}/s | 조향포화 {100*d['steer_sat']:.1f}% | "
           f"slew포화 {100*d['slew_sat']:.1f}%")
     print(f"  병목: {', '.join(d['binding']) if d['binding'] else '없음(여유 있음)'}")
-    if d['suggest_kp']:
+    if d['suggest_kp'] is not None:
         print(f"  권장 kp {d['kp']} → {d['suggest_kp']:.2f} (e_ss 를 {a.target_cm:.1f}cm 이하로)")
+    if not a.no_log:
+        log_path = os.path.join(os.path.dirname(__file__), 'ctrl_feedback_log.csv')
+        session = params.get('session') or cm.clip_name(a.csv)
+        append_log(log_path, session, d)
+        rows_log = cm.read_csv(log_path)
+        tr = fit_throttle_trend(rows_log, metric='steer_sat')
+        if tr['slope'] is not None:
+            msg = (f"throttle_at_steer_sat=0.3 ≈ {tr['throttle_at_limit']:.3f}"
+                   if tr['throttle_at_limit'] else '기울기 0')
+            print(f"  [누적 n={tr['n']}] 조향포화 추세 slope {tr['slope']:.2f}/throttle → {msg}")
+        else:
+            print(f"  [누적 n={tr['n']}] throttle 추세 미확정(점 3개 이상 필요)")
     return d, params
 
 

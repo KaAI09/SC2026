@@ -5,7 +5,7 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from ctrl_feedback import (curve_error, load_params, DEFAULT_PARAMS,   # noqa: E402 (교체)
                            oscillation_index, saturation_rates,
-                           suggest_kp, diagnose)
+                           suggest_kp, diagnose, fit_throttle_trend)
 
 
 def _row(t, ce_cm, steer):
@@ -64,6 +64,21 @@ def test_diagnose_binding_ess():
     d = diagnose(rows, p, segments=[], target_cm=17.4)
     assert 'e_ss' in d['binding'], d
     assert d['suggest_kp'] is not None, d
+
+
+def test_fit_throttle_trend_slope():
+    # throttle 0.20/0.24/0.28 에서 steer_sat 0.1/0.2/0.3 → slope=2.5/1단위throttle
+    log_rows = [{'throttle_base': '0.20', 'steer_sat': '0.1'},
+                {'throttle_base': '0.24', 'steer_sat': '0.2'},
+                {'throttle_base': '0.28', 'steer_sat': '0.3'}]
+    r = fit_throttle_trend(log_rows, metric='steer_sat')
+    assert r['n'] == 3, r
+    assert abs(r['slope'] - (0.2 / 0.08)) < 1e-6, r     # ΔY/ΔX = 0.2/0.08 = 2.5
+
+
+def test_fit_throttle_trend_insufficient():
+    r = fit_throttle_trend([{'throttle_base': '0.2', 'steer_sat': '0.1'}], metric='steer_sat')
+    assert r['n'] == 1 and r['slope'] is None, r        # 점 부족 → 미확정
 
 
 if __name__ == '__main__':
