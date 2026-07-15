@@ -3,7 +3,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from ctrl_feedback import curve_error, load_params, DEFAULT_PARAMS  # noqa: E402
+from ctrl_feedback import (curve_error, load_params, DEFAULT_PARAMS,   # noqa: E402 (교체)
+                           oscillation_index, saturation_rates)
 
 
 def _row(t, ce_cm, steer):
@@ -26,6 +27,25 @@ def test_load_params_defaults_when_no_sidecar():
     p = load_params('/nonexistent/drive_x.csv', overrides={'kp': 1.3})
     assert p['kp'] == 1.3, p
     assert p['x_half_cm'] == DEFAULT_PARAMS['x_half_cm'], p
+
+
+def test_oscillation_index_straight():
+    # 직선(steer~0)에서 center_error 가 +,-,+,- 로 3번 부호변화, 0.09초간
+    rows = [_row(0.0, 2.0, 0.01), _row(0.03, -2.0, 0.01),
+            _row(0.06, 2.0, 0.01), _row(0.09, -2.0, 0.01)]
+    idx = oscillation_index(rows, segments=[])
+    # 부호변화 3회 / (0.09-0.0)초 = 33.33/s
+    assert abs(idx - 3 / 0.09) < 1e-6, idx
+
+
+def test_saturation_rates():
+    p = dict(DEFAULT_PARAMS, slew_rate_per_sec=7.5)
+    # steer: 0.3, 0.7(포화), 0.7 → |steer|>=0.6 은 3프레임 중 2 = 2/3.
+    # slew: 전환 2개(i=1,2) 중 i=1 만 Δ=0.4/0.03s=13.3>=0.95·7.5 → 1/2.
+    rows = [_row(0.0, 0.0, 0.30), _row(0.03, 0.0, 0.70), _row(0.06, 0.0, 0.70)]
+    r = saturation_rates(rows, p)
+    assert abs(r['steer_sat'] - 2 / 3) < 1e-9, r
+    assert abs(r['slew_sat'] - 1 / 2) < 1e-9, r    # 전환 2개 중 1개가 slew 한계 초과
 
 
 if __name__ == '__main__':

@@ -66,3 +66,38 @@ def curve_error(rows, segments, steer_thresh=0.15):
     return {'e_ss_cm': float(np.median(es)) if es else float('nan'),
             'u_ss': float(np.median(us)) if us else float('nan'),
             'n': len(es)}
+
+
+def oscillation_index(rows, segments, steer_thresh=0.15):
+    """직선 프레임에서 center_error 부호변화 횟수 / 지속시간(초). 저감쇠 신호."""
+    ce, ts = [], []
+    for r in rows:
+        t = _fval(r, 'frame_time')
+        if not _is_curve(r, segments, t, steer_thresh):
+            c = _fval(r, 'center_error_cm')
+            if np.isfinite(c):
+                ce.append(c)
+                ts.append(t)
+    if len(ce) < 2:
+        return float('nan')
+    flips = sum(1 for i in range(1, len(ce)) if ce[i] * ce[i - 1] < 0)
+    dur = ts[-1] - ts[0]
+    return float(flips / dur) if dur > 0 else float('nan')
+
+
+def saturation_rates(rows, params):
+    """조향 포화율(|steer|>=0.6)과 slew 포화율(|Δsteer/Δt|>=0.95·slew_rate)."""
+    steers = np.array([_fval(r, 'ctrl_steering') for r in rows], dtype=float)
+    times = np.array([_fval(r, 'frame_time') for r in rows], dtype=float)
+    good = np.isfinite(steers)
+    steer_sat = float(np.mean(np.abs(steers[good]) >= 0.6)) if good.any() else float('nan')
+    slew = params.get('slew_rate_per_sec', 7.5)
+    n_slew, hit = 0, 0
+    for i in range(1, len(steers)):
+        dt = times[i] - times[i - 1]
+        if np.isfinite(steers[i]) and np.isfinite(steers[i - 1]) and dt > 0:
+            n_slew += 1
+            if abs(steers[i] - steers[i - 1]) / dt >= 0.95 * slew:
+                hit += 1
+    slew_sat = float(hit / n_slew) if n_slew else float('nan')
+    return {'steer_sat': steer_sat, 'slew_sat': slew_sat}
