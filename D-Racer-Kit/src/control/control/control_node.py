@@ -54,6 +54,7 @@ import os
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from rclpy.qos import QoSProfile, DurabilityPolicy
 from rcl_interfaces.msg import SetParametersResult
 from dracer_msgs.msg import Control, ControlConfig
 from dracer_msgs.msg import Joystick
@@ -158,7 +159,6 @@ class ControlNode(Node):
         if profile_path:
             self._apply_profile_params(section(load_profile(profile_path), 'control'))
             self.get_logger().info(f'control: loaded profile {profile_path}')
-        self.controller, self.conf_gate = self._build_controller()
         # live tuning: rebuild the controller whenever a control param is set
         self.add_on_set_parameters_callback(self._on_set_params)
 
@@ -184,9 +184,16 @@ class ControlNode(Node):
             self.create_subscription(MissionState, str(gp('mission_topic').value),
                                      self.mission_callback, 10)
         self.control_pub = self.create_publisher(Control, control_topic, 10)
-        from rclpy.qos import QoSProfile, DurabilityPolicy
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.config_pub = self.create_publisher(ControlConfig, '/control/config', latched)
+        # Build the controller only after config_pub exists, so _build_controller's call to
+        # _publish_config publishes the initial ControlConfig onto the latched topic instead
+        # of being swallowed by the hasattr guard below. Safe here: create_subscription above
+        # and create_timer below only register callbacks (state_callback / publish_cmd) that
+        # touch self.controller later, during spin() -- nothing above runs it synchronously.
+        # Result: a normal run with no `ros2 param set` still publishes /control/config once,
+        # so a late-joining recorder (Task 6) has a value to read.
+        self.controller, self.conf_gate = self._build_controller()
         self.timer = self.create_timer(1.0 / self.publish_rate, self.publish_cmd)
 
         self.get_logger().warning(
@@ -226,9 +233,9 @@ class ControlNode(Node):
     def _publish_config(self, kw):
         """Publish the just-built controller's active params on the latched
         /control/config topic. kw is _CTRL_FLOATS (+ 'controller') as built in
-        _build_controller. Guarded because _build_controller's first call happens
-        during __init__ before config_pub exists (self.controller assignment
-        precedes the publisher creation)."""
+        _build_controller. __init__ now builds the controller only after config_pub
+        is created, so this guard is defensive only (e.g. against a future caller
+        that builds a controller before the publisher exists), not load-bearing."""
         if not hasattr(self, 'config_pub'):
             return
         m = ControlConfig()
