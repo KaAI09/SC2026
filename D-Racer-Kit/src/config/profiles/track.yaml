@@ -6,7 +6,9 @@
 name: track
 
 perception:
-  colors: [white, yellow]   # 흰+노랑 마스크를 OR 로 합친다
+  colors: [white]           # ⚠ 임시: 노랑 검출 OFF — 섬 교차로 탈출 시 노란 인코스
+                            #   합류 구간을 차선으로 오판해 이탈. 기록 측정 우선이라 노랑을 뺀다.
+                            #   되돌리려면 [white, yellow]. 노란 로터리/지름길은 이 동안 안 보인다.
   yellow_h_lo: 18           # 0714 실측: 테이프 H 18~27. ⚠ 하한에 마진이 없다 —
   yellow_h_hi: 36           #   조명이 어두워져 노랑이 죽으면 14 로 내려라
   yellow_s_min: 65          #   (실측 S p05 = 85)
