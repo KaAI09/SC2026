@@ -66,7 +66,8 @@ def generate_launch_description():
         # decision nobody made, it was just a missing line.
         #
         # ⚠ ON = the car does not move until it is shown a GREEN. The gate starts STOPPED.
-        DeclareLaunchArgument('mission_gate', default_value='false',
+        # 기본 ON (레이스 기본값). 끄려면 mission_gate:=false.
+        DeclareLaunchArgument('mission_gate', default_value='true',
                               description='control_node gates throttle on GREEN/RED/MARK. '
                                           'ON = the car will not move until it sees a GREEN. '
                                           'Detection runs either way -- this is only whether '

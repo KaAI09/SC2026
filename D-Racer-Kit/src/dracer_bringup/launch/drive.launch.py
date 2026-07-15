@@ -95,8 +95,9 @@ def generate_launch_description():
         # And with it on, the car does NOT move until it is shown a GREEN -- engaged or not.
         # The gate starts STOPPED. Turn it on without knowing that and the car reads as broken.
         #
-        #     ros2 launch dracer_bringup drive.launch.py mission_gate:=true
-        DeclareLaunchArgument('mission_gate', default_value='false',
+        # 기본 ON (레이스 기본값 — 시작 GREEN·정지 신호를 지킨다). 끄려면:
+        #     ros2 launch dracer_bringup drive.launch.py mission_gate:=false
+        DeclareLaunchArgument('mission_gate', default_value='true',
                               description='control_node gates throttle on GREEN/RED/MARK. '
                                           'ON = the car will not move until it sees a GREEN. '
                                           'Detection runs either way -- this is only whether '
