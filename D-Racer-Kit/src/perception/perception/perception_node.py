@@ -382,6 +382,12 @@ class PerceptionNode(Node):
                 self.get_logger().info(
                     f'[mission] {self._mcls}:{CLASS_NAMES.get(self._mcls, "?")} 확정')
 
+            # 표지판(RIGHT=3/LEFT=4) → 갈림길 회피 hint. cls 는 디바운스된 값이라 표지판이
+            # 확정된 동안 유지된다. -1/기타면 None(=회피 안 함, keep).
+            hint = 'R' if self._mcls == 3 else ('L' if self._mcls == 4 else None)
+            if self.pipeline is not None:
+                self.pipeline.set_branch_hint(hint)
+
         # Render ONLY when something is actually listening. The debug composite plus its JPEG
         # encode dwarfs both detectors put together (they work on a 320x240 frame and a
         # 232x207 BEV), and it used to run every frame even with no subscriber — that was the
@@ -458,6 +464,8 @@ class PerceptionNode(Node):
         m.used_fallback = bool(s['used_fallback'])
         m.n_corridors = int(min(255, s['n_corridors']))
         m.ego_rule = str(s['ego_rule'])
+        m.fork_type = str(s.get('fork_type', '') or '')
+        m.n_islands = int(s.get('n_islands', 0))
         self.state_pub.publish(m)
 
     def _publish_mission(self, stamp, newly):

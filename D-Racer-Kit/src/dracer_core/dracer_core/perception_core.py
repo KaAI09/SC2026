@@ -1237,6 +1237,11 @@ class LanePipeline:
         self._size = None
         self._in_branch = False               # latch: a route is chosen ONCE per branch
         self._rng = random.Random(self.c.branch_seed)   # seeded: a replay must reproduce
+        self._branch_hint = None      # 'L'|'R' — 표지판(외부), 회피에만 쓴다
+
+    def set_branch_hint(self, hint):
+        """표지판 방향을 밖에서(mission cls) 넣는다. 회피 조향(Task 4) 전용."""
+        self._branch_hint = hint if hint in ('L', 'R') else None
 
     def reconfigure(self, cfg):
         """Swap the cm config and KEEP the cross-frame state (tracker identity, width, EMAs).
@@ -1403,6 +1408,8 @@ class LanePipeline:
             'n_corridors': n_corridors,
             'ego_rule': (f'branch_{c.branch_policy}' if (branch_pick is not None and ec is branch_pick)
                          else ((ec.get('rule') or 'none') if ec is not None else 'none')),
+            'fork_type': (ec.get('fork_type', '') if ec is not None else ''),
+            'n_islands': sum(1 for cc in centers if cc.get('fork_type') == 'island'),
         }
         if debug:
             dbg = {'mw': mw, 'my': my, 'lanes': lanes, 'windows': windows, 'ec': ec,

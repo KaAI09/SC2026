@@ -5,7 +5,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from dracer_core.perception_core import classify  # noqa: E402
-from dracer_core.perception_core import lane_centers, Cfg  # noqa: E402
+from dracer_core.perception_core import lane_centers, Cfg, LanePipeline  # noqa: E402
+from dracer_core.calib import CameraModel  # noqa: E402
 import numpy as np  # noqa: E402
 
 
@@ -58,6 +59,15 @@ def test_fork_island_lr_flagged():
     isl = [x for x in cors if x.get('is_fork')]
     assert isl and isl[0]['fork_type'] == 'island'
     assert isl[0]['turn_pair'] == ('L', 'R')
+
+
+def test_pipeline_set_branch_hint():
+    cam = CameraModel.load('D-Racer-Kit/src/config/camera.yaml') if os.path.exists(
+        'D-Racer-Kit/src/config/camera.yaml') else CameraModel.load(
+        os.path.join(os.path.dirname(__file__), '..', '..', 'config', 'camera.yaml'))
+    p = LanePipeline(Cfg(), cam)
+    p.set_branch_hint('L'); assert p._branch_hint == 'L'
+    p.set_branch_hint('bogus'); assert p._branch_hint is None
 
 
 if __name__ == '__main__':

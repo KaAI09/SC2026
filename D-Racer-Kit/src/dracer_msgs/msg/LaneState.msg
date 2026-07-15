@@ -33,3 +33,7 @@ string  ego_rule         # which rule chose the ego corridor:
                          #             by accident. This is where route logic goes.
                          #   coast   - one boundary + an assumed lane width
                          #   none    - no centreline this frame
+
+# --- fork evidence (12-label judgment) --------------------------------------
+string  fork_type        # '' | island(W-W (L,R)) | branch(그 외 분기). 감지, 회피는 use_fork
+uint8   n_islands        # 이 프레임 island 로 감지된 corridor 수
