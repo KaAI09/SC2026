@@ -44,7 +44,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from sensor_msgs.msg import CompressedImage
 from dracer_msgs.msg import Control
 from dracer_msgs.msg import Joystick
-from dracer_msgs.msg import LaneState
+from dracer_msgs.msg import LaneState, ControlConfig
 from dracer_msgs.msg import MissionState
 
 PANEL_DIR, RAW_DIR, CSV_DIR = 'panel', 'raw', 'csv'
@@ -93,6 +93,7 @@ class RecorderNode(Node):
 
         # latest signals (written per main-stream frame)
         self._state = None
+        self._ctrl_config = None
         self._mission = None
         self._ctrl = (0.0, 0.0)
         self._manual = (0.0, 0.0)
@@ -113,6 +114,10 @@ class RecorderNode(Node):
         if self._dual:
             self.create_subscription(CompressedImage, raw_topic, self.raw_callback, image_qos)
         self.create_subscription(LaneState, state_topic, self.state_callback, 10)
+        from rclpy.qos import QoSProfile, DurabilityPolicy
+        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.create_subscription(ControlConfig, '/control/config',
+                                 self._config_callback, latched)
         self.create_subscription(MissionState, mission_topic, self.mission_callback, 10)
         self.create_subscription(Control, control_topic, self.control_callback, 10)
         self.create_subscription(Joystick, joystick_topic, self.joystick_callback, 10)
@@ -128,6 +133,9 @@ class RecorderNode(Node):
     # ---- signal inputs ----------------------------------------------------
     def state_callback(self, msg: LaneState):
         self._state = msg
+
+    def _config_callback(self, msg: ControlConfig):
+        self._ctrl_config = msg
 
     def mission_callback(self, msg: MissionState):
         self._mission = msg
@@ -229,6 +237,18 @@ class RecorderNode(Node):
             stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             path = os.path.join(self.record_dir, CSV_DIR, f'{self.name_prefix}_{stamp}.csv')
             os.makedirs(os.path.dirname(path), exist_ok=True)
+
+            import json as _json
+            cfg = self._ctrl_config
+            meta = {'session': f'{self.name_prefix}_{stamp}'}
+            if cfg is not None:
+                for f in ('controller', 'kp', 'kd', 'throttle_base', 'throttle_min',
+                          'slew_rate_per_sec', 'steer_max', 'conf_gate', 'curv_slow', 'x_half_cm'):
+                    meta[f] = getattr(cfg, f)
+            meta_path = os.path.join(self.record_dir, CSV_DIR, f'{self.name_prefix}_{stamp}.meta.json')
+            with open(meta_path, 'w', encoding='utf-8') as mf:
+                _json.dump(meta, mf, ensure_ascii=False, indent=2)
+
             self._csv_file = open(path, 'w', newline='', encoding='utf-8')
             self._csv_writer = csv.writer(self._csv_file)
             self._csv_writer.writerow([
