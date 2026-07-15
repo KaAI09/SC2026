@@ -559,7 +559,7 @@ def _side(ins, w):
     return 'L' if ins['x_bottom'] < cx else 'R'
 
 
-def classify(ins, w):
+def classify(ins, w, corridor=None, mL=None, mR=None):
     """{colour}{turn}-{side}  ->  WS-L, WR-R, YL-L, ...
 
     Yellow's S/R/L split is unchanged -- `ins['turn']` (set in `_build_instance` from the
@@ -573,8 +573,21 @@ def classify(ins, w):
     all read the raw instance (coeffs, x_bottom, colour), so this is what the overlay draws
     and what the log says, and that is the point -- it is what lets a human see WHICH white
     line is which when four of them are in frame.
+
+    side 는 '그 선이 속한 corridor 에서의 벽역할'이다: corridor 의 왼벽(a)=L / 오른벽(b)=R.
+    corridor 가 없으면(coast/단일) Tracker 의 mL/mR 정체성, 그것도 없으면 화면위치(_side).
+    라벨은 렌더/로그 전용 — 판단은 raw 인스턴스로 한다.
     """
-    side = _side(ins, w)
+    if corridor is not None and ins is corridor.get('a'):
+        side = 'L'
+    elif corridor is not None and ins is corridor.get('b'):
+        side = 'R'
+    elif mL is not None and ins is mL:
+        side = 'L'
+    elif mR is not None and ins is mR:
+        side = 'R'
+    else:
+        side = _side(ins, w)
     tw = 'S' if ins['turn'] == 0 else ('R' if ins['turn'] > 0 else 'L')
     return f"{ins['color']}{tw}-{side}"
 
@@ -1470,11 +1483,20 @@ def render_bev(bgr, dbg, cfg, dets=None, confirmed=None):
     axis_u = int(cam.axis_u) if cam is not None else bw // 2
     cv2.line(bev, (axis_u, 0), (axis_u, bh - 1), (0, 0, 130), 1)   # vehicle axis
 
+    # 각 인스턴스가 ego corridor(우선) 또는 아무 corridor 의 a/b 인지 매핑 → side=벽역할
+    ego = dbg.get('ec')
+    cor_of = {}
+    for cc in ([ego] if ego and ego.get('a') and ego.get('b') else []) + (dbg.get('centers') or []):
+        if cc.get('a') is not None:
+            cor_of.setdefault(id(cc['a']), cc)
+        if cc.get('b') is not None:
+            cor_of.setdefault(id(cc['b']), cc)
+
     for ins in lanes:
         if ins['coeffs'] is None:
             continue
         _draw_bev_fit(bev, ins['coeffs'], *_lane_span(ins),
-                      LABEL_COLORS.get(classify(ins, bw), (0, 255, 0)), 2)
+                      LABEL_COLORS.get(classify(ins, bw, corridor=cor_of.get(id(ins))), (0, 255, 0)), 2)
 
     for cc in centers:
         if cc is ec:
@@ -1563,12 +1585,21 @@ def render_panels(bgr, dbg, cfg):
     _panel(p3, f'3 sliding ({len(lanes)} lane)')
 
     # P4: labels + ego centreline, unwarped back onto the camera view
+    # 각 인스턴스가 ego corridor(우선) 또는 아무 corridor 의 a/b 인지 매핑 → side=벽역할
+    ego = dbg.get('ec')
+    cor_of = {}
+    for cc in ([ego] if ego and ego.get('a') and ego.get('b') else []) + (dbg.get('centers') or []):
+        if cc.get('a') is not None:
+            cor_of.setdefault(id(cc['a']), cc)
+        if cc.get('b') is not None:
+            cor_of.setdefault(id(cc['b']), cc)
+
     p4 = bgr.copy()
     ty = 26
     for ins in lanes:
         if ins['coeffs'] is None:
             continue
-        lab = classify(ins, bw)
+        lab = classify(ins, bw, corridor=cor_of.get(id(ins)))
         col = LABEL_COLORS.get(lab, (0, 255, 0))
         _draw_fit(p4, ins['coeffs'], *_lane_span(ins), col, 2, cam)
         cv2.putText(p4, lab, (4, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.32, col, 1)
