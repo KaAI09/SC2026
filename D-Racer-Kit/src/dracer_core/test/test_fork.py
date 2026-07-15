@@ -5,6 +5,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from dracer_core.perception_core import classify  # noqa: E402
+from dracer_core.perception_core import lane_centers, Cfg  # noqa: E402
+import numpy as np  # noqa: E402
 
 
 def _ins(color, turn, x_bottom):
@@ -32,6 +34,30 @@ def test_side_fallback_screen():
     # corridor/tracker 없으면 기존 화면위치(_side)
     left = _ins('Y', +1, 40.0)    # 축 116 왼쪽
     assert classify(left, 232) == 'YR-L'
+
+
+def _line(color, x0, slope, turn):
+    ys = np.arange(0, 189, 4.0)
+    xs = x0 + slope * (188 - ys)          # v 클수록(아래=가까움) x0
+    return {'color': color, 'turn': turn, 'coeffs': (0.0, -slope, x0 + slope * 188),
+            'x_bottom': float(x0), 'x_mean': float(xs.mean()), 'ys': ys, 'xs': xs}
+
+
+def test_fork_island_lr_flagged():
+    c = Cfg(); c.fork_spread_min = 100.0   # 25cm*4px; 테스트는 px 직접
+    c.lane_width_default = 0.6; c.pair_same_color = True
+    c.pair_parallel = 0.0; c.pair_gap_min = 0.0; c.pair_width_tol = 0.0; c.pair_overlap_min = 0.0
+    # gap(y) = 27.2 + 0.6y: never crosses zero (min 27.2 at y=0) and spreads to 140.0 at
+    # y=188, so spread(=113) clears fork_spread_min without tripping pair_gap_min.
+    # lane_w_px=0 disables the physical-width gate -- this test is about the spread/turn
+    # gate, not about matching a real lane width to a zero-tolerance band.
+    left = _line('W', 60.0, +0.30, -1)     # 왼벽; turn=-1 → 'L'
+    right = _line('W', 200.0, -0.30, +1)   # 오른벽; turn=+1 → 'R'
+    cors = lane_centers([left, right], 232, 189, c, lane_w_px=0.0)
+    assert cors, 'corridor 하나는 나와야'
+    isl = [x for x in cors if x.get('is_fork')]
+    assert isl and isl[0]['fork_type'] == 'island'
+    assert isl[0]['turn_pair'] == ('L', 'R')
 
 
 if __name__ == '__main__':

@@ -130,6 +130,9 @@ class Cfg:
                                  # that is exactly what a per-frame `coast_side` flip did
                                  # (§8+), 0 oscillations -> 3.
     branch_seed: int = 0         # branch_policy='random' seed. Replays must be reproducible.
+    fork_spread_min_cm: float = 25.0  # 이 이상 벌어진 (L,R) corridor 만 갈림길(섬)로 본다.
+                                      # 일반주행 (L,R) 오검출 spread p50 17.9 vs 갈림길 34.
+    fork_spread_min: float = 0.0      # DERIVED from fork_spread_min_cm by cfg_to_px. Do not set.
     ego_tol: float = 0.6         # a corridor is the EGO corridor if its centreline sits within
                                  # this many lane widths of the vehicle axis. 0.5 = "the axis is
                                  # strictly inside it"; 0.6 leaves slack for a car running wide.
@@ -271,7 +274,7 @@ def cfg_from_profile(section=None):
 DERIVED_PX = frozenset({
     'sw_margin', 'sw_peak_sep', 'merge_dx', 'pair_gap_min', 'jump_max', 'pair_parallel',
     'morph_v', 'sw_minpix', 'sw_peak_min', 'gate_min_px',
-    'lane_width_default', 'heading_frac',
+    'lane_width_default', 'heading_frac', 'fork_spread_min',
 })
 
 
@@ -300,6 +303,7 @@ def cfg_to_px(cfg, cam):
         pair_gap_min=cfg.pair_gap_min_cm * s,
         pair_parallel=cfg.pair_parallel_cm * s,
         jump_max=cfg.jump_max_cm * s,
+        fork_spread_min=cfg.fork_spread_min_cm * s,
         # Pixel COUNTS -> areas (s^2); the histogram peak is a length (s).
         morph_v=max(3, int(round(cfg.morph_cm * s))),
         sw_minpix=max(4, int(round(cfg.sw_minpix_cm2 * s * s))),
@@ -559,6 +563,10 @@ def _side(ins, w):
     return 'L' if ins['x_bottom'] < cx else 'R'
 
 
+def _turn_char(turn):
+    return 'S' if turn == 0 else ('R' if turn > 0 else 'L')
+
+
 def classify(ins, w, corridor=None, mL=None, mR=None):
     """{colour}{turn}-{side}  ->  WS-L, WR-R, YL-L, ...
 
@@ -696,9 +704,16 @@ def lane_centers(lanes, w, h, c, lane_w_px=0.0, axis=None):
         ylo, yhi, spread = ov
         coeffs = tuple((p + q) / 2.0 for p, q in zip(a['coeffs'], b['coeffs']))
         x_bottom = float(_ebottom(coeffs, yhi))
+        tp = (_turn_char(a['turn']), _turn_char(b['turn']))
+        cp = (a['color'], b['color'])
+        is_fork = (tp == ('L', 'R') and spread >= c.fork_spread_min)
+        fork_type = ('island' if (is_fork and cp == ('W', 'W'))
+                     else ('branch' if is_fork else ''))
         out.append({'coeffs': coeffs, 'x_bottom': x_bottom, 'offset': x_bottom - cx,
                     'ego': False, 'rule': None, 'spread': spread,
-                    'a': a, 'b': b, 'y_lo': ylo, 'y_hi': yhi})
+                    'a': a, 'b': b, 'y_lo': ylo, 'y_hi': yhi,
+                    'turn_pair': tp, 'color_pair': cp,
+                    'is_fork': is_fork, 'fork_type': fork_type})
     return out
 
 
