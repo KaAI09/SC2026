@@ -82,6 +82,21 @@ def test_fork_avoid_left_shifts_outward():
     assert ec['x_bottom'] < left['x_bottom']     # 섬 바깥(왼쪽)으로 나갔다
 
 
+def test_fork_avoid_right_shifts_outward():
+    c = Cfg(); c.use_fork = True; c.fork_spread_min = 100.0
+    c.pair_same_color = True; c.pair_parallel = 0.0
+    c.pair_gap_min = 0.0; c.pair_width_tol = 0.0; c.pair_overlap_min = 0.0
+    left = _line('W', 60.0, +0.30, -1)     # 섬 왼모서리
+    right = _line('W', 180.0, -0.30, +1)   # 섬 오른모서리
+    cors = lane_centers([left, right], 232, 189, c, lane_w_px=0.0)
+    width = 139.0
+    # RIGHT: 오른모서리를 near, +반차폭 → 섬 오른쪽. x_bottom 이 섬 오른모서리보다 더 오른쪽이어야
+    ec = ego_center(cors, [left, right], 232, width, mL=None, mR=None,
+                    axis=116.0, c=c, mask=None, margin=0.0, hint='R')
+    assert ec is not None and ec['rule'] == 'fork_R'
+    assert ec['x_bottom'] > right['x_bottom']    # 섬 바깥(오른쪽)으로 나갔다
+
+
 def test_fork_off_is_keep():
     c = Cfg(); c.use_fork = False; c.fork_spread_min = 100.0
     c.pair_same_color = True; c.pair_parallel = 0.0
