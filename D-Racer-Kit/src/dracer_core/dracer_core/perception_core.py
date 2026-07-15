@@ -134,6 +134,12 @@ class Cfg:
                                       # 일반주행 (L,R) 오검출 spread p50 17.9 vs 갈림길 34.
     fork_spread_min: float = 0.0      # DERIVED from fork_spread_min_cm by cfg_to_px. Do not set.
     use_fork: bool = False   # 갈림길 회피 조향 게이트. off 면 감지/발행만, 조향은 main 과 동일.
+    sign_live_hold: int = 12          # HOW LONG A SIGN COUNTS AS "STILL THERE", in frames.
+                                       # perception_node re-pushes the hint every frame from
+                                       # `_sign_age`, not from the (sticky, debounced) mission
+                                       # class -- so the hint only lives while the sign is
+                                       # still (nearly) in frame, and a later, unrelated fork
+                                       # does not inherit an old sign's direction.
     ego_tol: float = 0.6         # a corridor is the EGO corridor if its centreline sits within
                                  # this many lane widths of the vehicle axis. 0.5 = "the axis is
                                  # strictly inside it"; 0.6 leaves slack for a car running wide.

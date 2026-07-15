@@ -207,6 +207,8 @@ class PerceptionNode(Node):
         self._frame_i = 0
         self._mdets = []
         self._mcls = None
+        self._sign = None            # 'L'|'R' — last confirmed direction sign (held briefly)
+        self._sign_age = 10 ** 6     # frames since the sign was last CONFIRMED
 
         self._last_log = self.get_clock().now()
         self._log_period = 1.0 / self.log_hz if self.log_hz > 0 else 0.0
@@ -382,11 +384,19 @@ class PerceptionNode(Node):
                 self.get_logger().info(
                     f'[mission] {self._mcls}:{CLASS_NAMES.get(self._mcls, "?")} 확정')
 
-            # 표지판(RIGHT=3/LEFT=4) → 갈림길 회피 hint. cls 는 디바운스된 값이라 표지판이
-            # 확정된 동안 유지된다. -1/기타면 None(=회피 안 함, keep).
-            hint = 'R' if self._mcls == 3 else ('L' if self._mcls == 4 else None)
-            if self.pipeline is not None:
-                self.pipeline.set_branch_hint(hint)
+            # 표지판(RIGHT=3/LEFT=4) → 갈림길 회피 hint 래치. `_mcls` 는 디바운스된 값이라
+            # 표지판이 확정된 동안만 잡고, 실제로 hint 를 미는 것은 프레임마다 도는
+            # `_sign_age` 쪽이다 (mission 이 스킵되는 프레임에도 나이는 먹어야 한다).
+            if self._mcls in (3, 4):
+                self._sign = 'R' if self._mcls == 3 else 'L'
+                self._sign_age = 0
+
+        # 표지판(sign_live_hold)의 생존 판정은 mission_frame_skip 과 무관하게 매 프레임
+        # 돌아야 한다 — 그래야 mission 이 스킵된 프레임에서도 hint 가 제때 꺼진다.
+        self._sign_age += 1
+        if self.pipeline is not None:
+            live = self._sign_age <= self.cfg.sign_live_hold
+            self.pipeline.set_branch_hint(self._sign if live else None)
 
         # Render ONLY when something is actually listening. The debug composite plus its JPEG
         # encode dwarfs both detectors put together (they work on a 320x240 frame and a
