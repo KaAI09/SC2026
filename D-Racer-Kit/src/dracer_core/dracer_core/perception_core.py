@@ -130,9 +130,15 @@ class Cfg:
                                  # that is exactly what a per-frame `coast_side` flip did
                                  # (§8+), 0 oscillations -> 3.
     branch_seed: int = 0         # branch_policy='random' seed. Replays must be reproducible.
-    fork_spread_min_cm: float = 25.0  # 이 이상 벌어진 (L,R) corridor 만 갈림길(섬)로 본다.
-                                      # 일반주행 (L,R) 오검출 spread p50 17.9 vs 갈림길 34.
+    fork_spread_min_cm: float = 15.0  # (L,R) corridor 를 갈림길(섬)로 보는 spread 하한.
+                                      # 25->15: 갈림길 접근부(spread 16~26cm)를 더 잡으려 완화.
+                                      # ⚠ 옛 데이터 일반주행 (L,R) 오검출 spread p50 17.9 — 15 는
+                                      #   그 구간에 걸친다. fresh 4클립은 오검출 0% 였으나 전체
+                                      #   랩으로 재검증 필요. 오검출 뜨면 20~25 로 되올릴 것.
     fork_spread_min: float = 0.0      # DERIVED from fork_spread_min_cm by cfg_to_px. Do not set.
+    fork_gap_min_cm: float = 35.0     # 벽 간격(gap)이 이 이상이면 spread 낮아도 갈림길로 본다
+                                      # (차선폭 34.8 초과 = 한 차선보다 넓게 벌어짐). (L,R) 과 함께.
+    fork_gap_min: float = 0.0         # DERIVED from fork_gap_min_cm by cfg_to_px. Do not set.
     use_fork: bool = False   # 갈림길 회피 조향 게이트. off 면 감지/발행만, 조향은 main 과 동일.
     sign_live_hold: int = 12          # HOW LONG A SIGN COUNTS AS "STILL THERE", in frames.
                                        # perception_node re-pushes the hint every frame from
@@ -311,6 +317,7 @@ def cfg_to_px(cfg, cam):
         pair_parallel=cfg.pair_parallel_cm * s,
         jump_max=cfg.jump_max_cm * s,
         fork_spread_min=cfg.fork_spread_min_cm * s,
+        fork_gap_min=cfg.fork_gap_min_cm * s,
         # Pixel COUNTS -> areas (s^2); the histogram peak is a length (s).
         morph_v=max(3, int(round(cfg.morph_cm * s))),
         sw_minpix=max(4, int(round(cfg.sw_minpix_cm2 * s * s))),
@@ -713,7 +720,9 @@ def lane_centers(lanes, w, h, c, lane_w_px=0.0, axis=None):
         x_bottom = float(_ebottom(coeffs, yhi))
         tp = (_turn_char(a['turn']), _turn_char(b['turn']))
         cp = (a['color'], b['color'])
-        is_fork = (tp == ('L', 'R') and spread >= c.fork_spread_min)
+        gap = b['x_bottom'] - a['x_bottom']   # ls 가 x_bottom 오름차순 -> b >= a
+        is_fork = (tp == ('L', 'R')                              # 반대곡률 = 하드 필수(특이적)
+                   and (spread >= c.fork_spread_min or gap >= c.fork_gap_min))
         fork_type = ('island' if (is_fork and cp == ('W', 'W'))
                      else ('branch' if is_fork else ''))
         out.append({'coeffs': coeffs, 'x_bottom': x_bottom, 'offset': x_bottom - cx,

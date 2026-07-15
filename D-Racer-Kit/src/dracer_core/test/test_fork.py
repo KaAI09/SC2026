@@ -62,6 +62,30 @@ def test_fork_island_lr_flagged():
     assert isl[0]['turn_pair'] == ('L', 'R')
 
 
+def test_fork_gap_triggers_when_spread_low():
+    # spread 는 낮지만(거의 평행) gap 이 넓으면 gap 게이트로 fork 로 잡는다.
+    c = Cfg(); c.fork_spread_min = 100.0; c.fork_gap_min = 140.0   # 35cm*4px
+    c.lane_width_default = 0.6; c.pair_same_color = True
+    c.pair_parallel = 0.0; c.pair_gap_min = 0.0; c.pair_width_tol = 0.0; c.pair_overlap_min = 0.0
+    left = _line('W', 40.0, +0.05, -1)     # 거의 평행(작은 slope) → spread 낮음
+    right = _line('W', 190.0, -0.05, +1)   # gap(bottom)=150 >= 140, spread ~19 < 100
+    cors = lane_centers([left, right], 232, 189, c, lane_w_px=0.0)
+    isl = [x for x in cors if x.get('is_fork')]
+    assert isl and isl[0]['fork_type'] == 'island', cors
+    assert isl[0]['spread'] < c.fork_spread_min   # spread 로는 안 걸리고 gap 으로 걸린 것
+
+
+def test_fork_gap_alone_not_enough_without_lr():
+    # gap 이 넓어도 (L,R) 반대곡률이 아니면 절대 fork 아님 (일반 넓은 구간 보호).
+    c = Cfg(); c.fork_spread_min = 100.0; c.fork_gap_min = 140.0
+    c.lane_width_default = 0.6; c.pair_same_color = True
+    c.pair_parallel = 0.0; c.pair_gap_min = 0.0; c.pair_width_tol = 0.0; c.pair_overlap_min = 0.0
+    left = _line('W', 40.0, +0.05, 0)      # turn=0(S) — (L,R) 아님
+    right = _line('W', 190.0, -0.05, 0)
+    cors = lane_centers([left, right], 232, 189, c, lane_w_px=0.0)
+    assert not any(x.get('is_fork') for x in cors), 'gap 넓어도 (L,R) 아니면 fork 아님'
+
+
 def test_fork_avoid_left_shifts_outward():
     c = Cfg(); c.use_fork = True; c.fork_spread_min = 100.0
     c.pair_same_color = True; c.pair_parallel = 0.0
