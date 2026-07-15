@@ -134,6 +134,6 @@ ros2 param set /control_node engage false     # 또는 조이스틱 X (E-STOP)
 | camera.yaml | 29cm | 42cm 는 center_error 0.69배 축소 → 조향 약화. 쓰지 않는다 |
 | kp / kd | 1.4 / 0.14 | 교차로 실차 성공값 |
 | colors | [white] | ⚠ 노랑 OFF(임시) — 노란 인코스 오판 방지. 되돌리려면 [white, yellow] |
-| sign_invert | **true (기본)** | 이 대회장 화살표 스타일. RIGHT/LEFT 정상. 다른 대회장서 뒤집히면 `param set /perception_node sign_invert false` |
+| sign_invert | **false (기본)** | 이 대회장은 원본이 정확(좌회전→4/우회전→3). 뒤집히는 대회장서만 `param set /perception_node sign_invert true` |
 | use_fork | off (기본) | param 으로 켠다 |
 | mission_gate | off (기본) | launch 인자로 켠다 |
