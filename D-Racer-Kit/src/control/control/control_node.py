@@ -58,8 +58,10 @@ from rcl_interfaces.msg import SetParametersResult
 from dracer_msgs.msg import Control
 from dracer_msgs.msg import Joystick
 from dracer_msgs.msg import LaneState
+from dracer_msgs.msg import MissionState
 
 from dracer_core.control_core import Controller, make_ctrl
+from dracer_core.mission_core import MissionGate
 from dracer_core.profile import load_profile, section
 
 
@@ -107,6 +109,19 @@ class ControlNode(Node):
         # This expires the JOYSTICK engage only; the `engage` PARAM path (headless bring-up
         # with no pad at all) is untouched.
         p('joystick_timeout', 0.3)
+        # Mission stop-and-go. OFF by default: with it on the car does NOT move until a GREEN
+        # is confirmed, engaged or not, and a driver who does not know that reads it as "the
+        # car is broken". `mission_resume_s` is read once, here -- the gate is built at
+        # construction, so `ros2 param set` on a running car will not change it.
+        p('use_mission', False)
+        p('mission_topic', '/mission/state')
+        p('mission_resume_s', 30.0)
+        # Seconds the ArUco stop is held after the marker was last seen. The marker is a
+        # barrier that rises and falls and the car must stay stopped while it is down, but
+        # the detector drops it for up to 800ms at a time as the car closes in and the marker
+        # clips at the frame border. Without the hold the car lurches forward into those gaps.
+        # In seconds, so frame_skip and the achieved frame rate cannot shorten it.
+        p('mission_mark_hold_s', 1.5)
         # offline-selected profile (authoritative for the fields it specifies)
         p('profile', '')
         # control (PD defaults, conservative)
@@ -157,8 +172,17 @@ class ControlNode(Node):
         self.last_js_time = None      # wall time of the last /joystick (joystick dead-man)
         self.js_stale = False         # True only after a joystick we HAD went silent
 
+        # Mission gate: withholds throttle only (never commands motion). See mission_core.
+        self.mission_cls = -1
+        self.mission_gate = (MissionGate(float(gp('mission_resume_s').value),
+                                         mark_hold_s=float(gp('mission_mark_hold_s').value))
+                             if bool(gp('use_mission').value) else None)
+
         self.create_subscription(LaneState, state_topic, self.state_callback, 10)
         self.create_subscription(Joystick, joystick_topic, self.joystick_callback, 10)
+        if self.mission_gate is not None:
+            self.create_subscription(MissionState, str(gp('mission_topic').value),
+                                     self.mission_callback, 10)
         self.control_pub = self.create_publisher(Control, control_topic, 10)
         self.timer = self.create_timer(1.0 / self.publish_rate, self.publish_cmd)
 
@@ -215,6 +239,11 @@ class ControlNode(Node):
                 self.get_logger().error('E-STOP latched (joystick X). Autonomous output disabled.')
             self.e_stop = True
         self.js_engage = bool(msg.engage)
+
+    def mission_callback(self, msg: MissionState):
+        """cls 는 디바운스된 확정 클래스. 타입은 MissionState(Int32 아님) — 불일치면 콜백이
+        조용히 안 불려 cls 가 -1 로 굳고 GREEN 을 영원히 못 본다(se 가 고친 버그)."""
+        self.mission_cls = int(msg.cls)
 
     def _joystick_is_stale(self):
         """Has the joystick gone silent? Only meaningful once we have actually seen one --
@@ -292,6 +321,16 @@ class ControlNode(Node):
             steer, thr = 0.0, 0.0
         else:
             steer, thr = self.latest_cmd
+
+        # 미션 게이트: 맨 끝, 스로틀만. E-STOP/미engage/stale 을 못 덮는다(스로틀을 뺏기만).
+        # engage 시만: RED 30초 resume 타이머가 피트에서 헛돌지 않게. 조향은 유지(GREEN 에 바퀴 준비).
+        if self.mission_gate is not None and engage and not (self.e_stop or stale):
+            allow, event = self.mission_gate.update(
+                self.mission_cls, self.get_clock().now().nanoseconds * 1e-9)
+            if event:
+                self.get_logger().warning(f'[MISSION] {event}')
+            if not allow:
+                thr = 0.0
         m = Control()
         m.header.stamp = self.get_clock().now().to_msg()
         m.header.frame_id = 'control'

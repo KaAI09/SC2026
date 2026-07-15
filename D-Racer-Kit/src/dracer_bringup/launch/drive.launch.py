@@ -82,7 +82,25 @@ def generate_launch_description():
                                           'quadruples the bytes on the wire for pixels the '
                                           'browser would have scaled for free.'),
         DeclareLaunchArgument('mission_config', default_value='',
-                              description='venue mission YAML from scripts/mission_tune.py'),
+                              description='venue mission YAML overriding MissionCfg. Rarely needed -- the '
+                                          'gates measure PHYSICS (does it emit?), not venue '
+                                          'thresholds; see MissionCfg.'),
+        # THE THROTTLE GATE, and it is OFF by default -- on purpose, twice over.
+        #
+        # `perception_node` always detects and publishes (/mission/state). This switch is only
+        # about whether `control_node` ACTS on it. It is separate because the two failure modes
+        # are opposite: a detector that is wrong is a bad log line, a GATE that is wrong is a
+        # car that will not move.
+        #
+        # And with it on, the car does NOT move until it is shown a GREEN -- engaged or not.
+        # The gate starts STOPPED. Turn it on without knowing that and the car reads as broken.
+        #
+        #     ros2 launch dracer_bringup drive.launch.py mission_gate:=true
+        DeclareLaunchArgument('mission_gate', default_value='false',
+                              description='control_node gates throttle on GREEN/RED/MARK. '
+                                          'ON = the car will not move until it sees a GREEN. '
+                                          'Detection runs either way -- this is only whether '
+                                          'the throttle listens.'),
         DeclareLaunchArgument('engage', default_value='false',
                               description='start autonomously actuating (keep false; '
                                           'set true only after wheels-off checks)'),
@@ -118,7 +136,9 @@ def generate_launch_description():
             output='screen',
             parameters=[{'profile': profile,
                          'publish_rate': ParameterValue(publish_rate, value_type=float),
-                         'engage': ParameterValue(engage, value_type=bool)}],
+                         'engage': ParameterValue(engage, value_type=bool),
+                         'use_mission': ParameterValue(
+                             LaunchConfiguration('mission_gate'), value_type=bool)}],
         ),
         Node(
             package='recorder', executable='recorder_node', name='recorder_node',

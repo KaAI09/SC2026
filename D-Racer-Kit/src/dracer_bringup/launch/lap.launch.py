@@ -59,8 +59,22 @@ def generate_launch_description():
         DeclareLaunchArgument('publish_rate', default_value='30.0',
                               description='control_node /control rate. Should be >= the '
                                           'perception rate or commands are dropped.'),
+        # THE THROTTLE GATE. Same switch as `drive`, same default (off), and it belongs here
+        # for the same reason it belongs there: `perception_node` always DETECTS, and this only
+        # says whether `control_node` ACTS. Without the argument a timed lap could not obey a
+        # red light even if you wanted it to -- and "the lap launch cannot do missions" is a
+        # decision nobody made, it was just a missing line.
+        #
+        # ⚠ ON = the car does not move until it is shown a GREEN. The gate starts STOPPED.
+        DeclareLaunchArgument('mission_gate', default_value='false',
+                              description='control_node gates throttle on GREEN/RED/MARK. '
+                                          'ON = the car will not move until it sees a GREEN. '
+                                          'Detection runs either way -- this is only whether '
+                                          'the throttle listens.'),
         DeclareLaunchArgument('mission_config', default_value='',
-                              description='venue mission YAML from scripts/mission_tune.py'),
+                              description='venue mission YAML overriding MissionCfg. Rarely needed -- the '
+                                          'gates measure PHYSICS (does it emit?), not venue '
+                                          'thresholds; see MissionCfg.'),
         *core_nodes(
             vehicle_config,
             calibration_mode=False,
@@ -83,6 +97,8 @@ def generate_launch_description():
             output='screen',
             parameters=[{'profile': profile,
                          'publish_rate': ParameterValue(publish_rate, value_type=float),
-                         'engage': ParameterValue(engage, value_type=bool)}],
+                         'engage': ParameterValue(engage, value_type=bool),
+                         'use_mission': ParameterValue(
+                             LaunchConfiguration('mission_gate'), value_type=bool)}],
         ),
     ])
