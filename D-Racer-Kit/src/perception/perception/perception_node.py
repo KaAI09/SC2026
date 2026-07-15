@@ -461,6 +461,7 @@ class PerceptionNode(Node):
         m.header.frame_id = 'lane'
         m.valid = s['center_error'] is not None
         m.center_error = _nan(s['center_error'])
+        m.center_error_cm = _nan(s['center_error_cm'])
         m.ema = _nan(s['ema'])
         m.heading_valid = s['heading'] is not None
         m.heading = _nan(s['heading'])

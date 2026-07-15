@@ -5,6 +5,7 @@ std_msgs/Header header
 
 bool    valid            # center_error is available this frame
 float32 center_error     # lateral error, normalized [-1, 1], + = right (NaN if !valid)
+float32 center_error_cm  # lateral error in cm (NaN if !valid). calib-invariant; use this for metric control.
 float32 ema              # temporally smoothed center_error (NaN if none yet)
 
 bool    heading_valid    # heading is available this frame
