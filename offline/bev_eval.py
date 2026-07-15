@@ -137,6 +137,77 @@ def cmd_coast(a):
     print('  ⚠ 낙관 편향: 양쪽 보이던 프레임 기준이라 실제 coast 보다 유리하게 나옴.')
 
 
+# ------------------------------------------------------------------ quality
+def parse_segments(path):
+    """seg.csv (start_s,end_s,label) → [(start,end,label)]. 촬영 시 사람이 라벨한 구간."""
+    import csv as _csv
+    out = []
+    with open(os.path.expanduser(path), encoding='utf-8') as f:
+        for r in _csv.DictReader(f):
+            out.append((float(r['start_s']), float(r['end_s']), (r['label'] or '').strip()))
+    return out
+
+
+def label_for_time(segments, t):
+    for s, e, lab in segments:
+        if s <= t < e:
+            return lab
+    return ''
+
+
+def _pct(xs, q):
+    return float(np.percentile(xs, q)) if len(xs) else float('nan')
+
+
+def cmd_quality(a):
+    cfg = load_cfg(a.profile)
+    cam = CameraModel.load(os.path.expanduser(a.camera))
+    lane_w = getattr(cfg, 'lane_width_cm', 34.8)
+    segs = parse_segments(a.segments) if a.segments else []
+    _, fps, _ = cm.open_clip(a.raw)
+    # 라벨별 수집: 직선은 validate 3지표, 그 외는 pair_gap(폭 일관성)
+    straight = {'width_err': [], 'spread': [], 'skew': []}
+    curve_gap = {}   # label -> [gap_cm...]
+    for i, st, dbg in replay(a.raw, cam, cfg, want_dbg=True):
+        t = i / fps
+        lab = label_for_time(segs, t) if segs else ''
+        lanes = dbg['lanes']
+        if lab == '직선':
+            v = cam.validate(lanes, lane_w)
+            if 'width_err_cm' in v:   # 조기반환(2선 미검출)이면 키 없음 → 건너뜀
+                straight['width_err'].append(abs(v['width_err_cm']))
+                straight['spread'].append(v['parallel_spread_cm'])
+                straight['skew'].append(v['vertical_skew_cm'])
+        elif lab:
+            gap = _pair_gap_cm(dbg, cam)
+            if gap is not None:
+                curve_gap.setdefault(lab, []).append(gap)
+    print(cm.clip_name(a.raw), '|', cam.summary())
+    if not segs:
+        print('  ⚠ --segments 미지정 → 구간 라벨 없음. 촬영 시 seg.csv(start_s,end_s,label) 제공 권장.')
+    n = len(straight['width_err'])
+    if n:
+        print(f'  [직선 n={n}] validate  폭오차 p50 {_pct(straight["width_err"],50):.2f} '
+              f'p90 {_pct(straight["width_err"],90):.2f}cm  | 평행 spread p90 '
+              f'{_pct(straight["spread"],90):.2f}cm  | 수직 skew p90 '
+              f'{_pct(straight["skew"],90):.2f}cm')
+    for lab, gaps in sorted(curve_gap.items()):
+        g = np.array(gaps)
+        print(f'  [{lab} n={len(g)}] pair_gap  p50 {np.percentile(g,50):.2f} '
+              f'p90 {np.percentile(g,90):.2f}cm (기대 {lane_w:.1f}cm)')
+
+
+def _pair_gap_cm(dbg, cam):
+    """dbg['ec'] 가 실제 pair(a,b coeffs) 면 두 벽 하단 간격을 cm 로. 아니면 None."""
+    ec = dbg.get('ec')
+    if not ec or ec.get('a') is None or ec.get('b') is None:
+        return None
+    a, b = ec['a'], ec['b']
+    if a.get('x_bottom') is None or b.get('x_bottom') is None:
+        return None
+    return abs(float(b['x_bottom'] - a['x_bottom'])) / cam.px_per_cm
+
+
 # ----------------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
@@ -155,6 +226,13 @@ def main():
     pc.add_argument('--camera', required=True)
     pc.add_argument('--profile', default='')
     pc.set_defaults(func=cmd_coast)
+
+    pq = sub.add_parser('quality', help='구간별 BEV 품질 맵')
+    pq.add_argument('raw')
+    pq.add_argument('--camera', required=True)
+    pq.add_argument('--profile', default='')
+    pq.add_argument('--segments', default='', help='seg.csv (start_s,end_s,label)')
+    pq.set_defaults(func=cmd_quality)
 
     a = ap.parse_args()
     a.func(a)

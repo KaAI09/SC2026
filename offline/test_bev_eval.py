@@ -3,7 +3,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from bev_eval import scale_stats, coast_transitions  # noqa: E402
+from bev_eval import (scale_stats, coast_transitions,   # noqa: E402 (import 줄 교체)
+                      parse_segments, label_for_time)
 
 
 def test_scale_stats_ratio():
@@ -42,6 +43,25 @@ def test_coast_side_flip():
               _st(19.0, False, True)]   # pair 는 우(+), |Δ|=39>17.4 & 부호반전 → flip
     tr = coast_transitions(states)
     assert len(tr) == 1 and tr[0]['side_flip'] is True, tr
+
+
+def test_label_for_time():
+    segs = [(0.0, 2.0, '직선'), (2.0, 5.0, '좌커브'), (5.0, 9.0, '우커브')]
+    assert label_for_time(segs, 1.0) == '직선'
+    assert label_for_time(segs, 2.0) == '좌커브'    # 경계는 start 포함
+    assert label_for_time(segs, 8.9) == '우커브'
+    assert label_for_time(segs, 9.0) == ''          # 범위 밖
+
+
+def test_parse_segments(tmp_path=None):
+    import tempfile
+    txt = 'start_s,end_s,label\n0,2.0,직선\n2.0,5,좌커브\n'
+    fd, path = tempfile.mkstemp(suffix='.csv')
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        f.write(txt)
+    segs = parse_segments(path)
+    os.remove(path)
+    assert segs == [(0.0, 2.0, '직선'), (2.0, 5.0, '좌커브')], segs
 
 
 if __name__ == '__main__':
