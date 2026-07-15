@@ -162,7 +162,7 @@ def fit_throttle_trend(log_rows, metric='steer_sat', limit=0.3):
         if np.isfinite(x) and np.isfinite(y):
             xs.append(x)
             ys.append(y)
-    if len(xs) < 3:
+    if len(xs) < 3 or np.ptp(xs) == 0:      # 점<3 또는 throttle 이 모두 동일(수직선) → 피팅 불가
         return {'n': len(xs), 'slope': None, 'throttle_at_limit': None}
     slope, intercept = np.polyfit(xs, ys, 1)
     t_lim = ((limit - intercept) / slope) if slope != 0 else None

@@ -81,6 +81,15 @@ def test_fit_throttle_trend_insufficient():
     assert r['n'] == 1 and r['slope'] is None, r        # 점 부족 → 미확정
 
 
+def test_fit_throttle_trend_vertical():
+    # 점≥3 이지만 throttle 이 전부 동일(수직선) → polyfit rank-deficient, 미확정 처리
+    log_rows = [{'throttle_base': '0.23', 'steer_sat': '0.1'},
+                {'throttle_base': '0.23', 'steer_sat': '0.2'},
+                {'throttle_base': '0.23', 'steer_sat': '0.3'}]
+    r = fit_throttle_trend(log_rows, metric='steer_sat')
+    assert r['n'] == 3 and r['slope'] is None, r
+
+
 if __name__ == '__main__':
     for name, fn in sorted(globals().items()):
         if name.startswith('test_') and callable(fn):

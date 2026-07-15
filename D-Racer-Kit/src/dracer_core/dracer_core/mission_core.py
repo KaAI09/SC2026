@@ -303,18 +303,6 @@ def _circularity(cnt):
     return area / (np.pi * r * r + 1e-6) if r > 0 else 0.0
 
 
-def _best_blob(mask, min_area, min_circ, max_area=None):
-    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    best = None
-    for cnt in cnts:
-        area = cv2.contourArea(cnt)
-        if area < min_area or (max_area and area > max_area) or _circularity(cnt) < min_circ:
-            continue
-        if best is None or area > best[0]:
-            best = (area, cnt)
-    return best
-
-
 # ==========================================================================
 # Traffic light (cls 0 GREEN, 1 RED)
 # ==========================================================================
@@ -518,87 +506,6 @@ def detect_sign(bgr, cfg, hsv=None):
             out.append((direction, float(min(1.0, _circularity(cnt))),
                         tuple(int(v) for v in cv2.boundingRect(cnt))))
     return out
-
-
-# ==========================================================================
-# Debug: loose red/green candidate scan (for live HSV tuning -> CSV)
-# ==========================================================================
-def light_candidates(bgr, cfg, top_k=4):
-    """LOOSE red/green blob scan so a dim / colour-shifted lamp still shows up even when
-    detect_light misses it. Skips noise (<12px) and huge background (> the light max-area).
-    Returns the top_k blobs per colour by area, each with the exact quantities the detector
-    gates on -- hue/sat/val (colour), area/circ (shape) -- so the venue tuner reads the same
-    numbers the car will."""
-    h, w = bgr.shape[:2]
-    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    k = np.ones((3, 3), np.uint8)
-    max_area = cfg.light_max_area_frac * h * w
-    bands = {
-        'RED': cv2.bitwise_or(cv2.inRange(hsv, (0, 40, 40), (18, 255, 255)),
-                              cv2.inRange(hsv, (160, 40, 40), (180, 255, 255))),
-        'GREEN': cv2.inRange(hsv, (35, 40, 40), (95, 255, 255)),
-    }
-    out = []
-    for color, m in bands.items():
-        m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, k)
-        cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        blobs = []
-        for cnt in cnts:
-            area = cv2.contourArea(cnt)
-            if area < 12 or area > max_area:            # skip noise + huge bg (mat/floor)
-                continue
-            x, y, bw, bh = cv2.boundingRect(cnt)
-            sel = m[y:y + bh, x:x + bw] > 0
-            blob = hsv[y:y + bh, x:x + bw]
-            blobs.append({
-                'color': color,
-                'hue': int(np.median(blob[:, :, 0][sel])),
-                'sat': int(np.median(blob[:, :, 1][sel])),
-                'val': int(np.median(blob[:, :, 2][sel])),   # a LIT lamp is bright: this is
-                                                             # what separates red from red paint
-                'circ': round(_circularity(cnt), 2),         # and this is what separates green
-                'area': int(area),
-                'x': int(x), 'y': int(y), 'w': int(bw), 'h': int(bh),
-            })
-        blobs.sort(key=lambda d: d['area'], reverse=True)
-        out.extend(blobs[:top_k])
-    return out
-
-
-def sign_candidates(bgr, cfg, top_k=4):
-    """LOOSE blue-sign blob scan for OPTIONAL venue tuning (opt-in via perception_node
-    log_signs:=true). A sign is a large solid PRINTED blue disc (a reflector, not an
-    emitter), so brightness means nothing here -- this just reports its HSV, size and
-    roundness, the same CSV schema as the lamps.
-
-    NOTE: this grounds sign DETECTION (the blue mask) only, NEVER the arrow DIRECTION
-    (_arrow_direction). After tuning blue, still dwell a RIGHT/LEFT sign and confirm the
-    printed class is correct."""
-    h, w = bgr.shape[:2]
-    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    k = np.ones((3, 3), np.uint8)
-    m = cv2.morphologyEx(cv2.inRange(hsv, (90, 40, 40), (135, 255, 255)),
-                         cv2.MORPH_CLOSE, k)
-    cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    blobs = []
-    for cnt in cnts:
-        area = cv2.contourArea(cnt)
-        if area < 40:                                   # skip small blue noise
-            continue
-        x, y, bw, bh = cv2.boundingRect(cnt)
-        sel = m[y:y + bh, x:x + bw] > 0
-        blob = hsv[y:y + bh, x:x + bw]
-        blobs.append({
-            'color': 'BLUE',
-            'hue': int(np.median(blob[:, :, 0][sel])),
-            'sat': int(np.median(blob[:, :, 1][sel])),
-            'val': int(np.median(blob[:, :, 2][sel])),
-            'circ': round(_circularity(cnt), 2),
-            'area': int(area),
-            'x': int(x), 'y': int(y), 'w': int(bw), 'h': int(bh),
-        })
-    blobs.sort(key=lambda d: d['area'], reverse=True)
-    return blobs[:top_k]
 
 
 # ==========================================================================

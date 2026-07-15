@@ -247,7 +247,11 @@ class ControlNode(Node):
         self.config_pub.publish(m)
 
     def _x_half_cm(self):
-        return 29.0   # camera.yaml 의 bev.x_half_cm. control_node 는 calib 을 로드하지 않으므로 상수.
+        # camera.yaml 의 bev.x_half_cm. control_node 는 calib 을 로드하지 않으므로 상수로 둔다.
+        # ⚠ 재캘리브로 camera.yaml 의 x_half_cm 이 바뀌면 이 값도 손으로 맞춰야 한다 — 안 맞추면
+        #    /control/config 의 center_error_cm↔center_error 환산 스케일이 어긋난다.
+        #    (deep BEV 로 x_half 를 바꿀 땐 이 상수를 config 단일 출처로 통합하는 걸 검토.)
+        return 29.0
 
     def _on_set_params(self, params):
         """Live: rebuild the controller when any control param is set."""

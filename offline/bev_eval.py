@@ -17,7 +17,6 @@ import argparse
 import os
 import sys
 
-import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..',

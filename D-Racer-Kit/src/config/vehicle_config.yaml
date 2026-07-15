@@ -7,8 +7,6 @@ MIPI_CAM: false
 USB_CAM_DEVICE: /dev/video1   # v4l2 장치 경로
 IMAGE_WIDTH: 320              # 카메라가 발행하는 해상도. perception 이 camera.yaml 을 여기에
 IMAGE_HEIGHT: 240             #   맞춰 rescale 한다 — 캘리브 해상도와 달라도 된다
-ROI_TOP: 50                   # (미사용 — BEV LUT 가 캘리브레이션된 크롭을 대신한다)
-ROI_LEFT: 0
 
 # --- 조향 서보 (실측: scripts/servo_sweep.py + 실차 직진 확인) ----------------
 # center 1650us = 0도,  1350us = 우 25도,  1950us = 좌 25도   (300us = 25도)
