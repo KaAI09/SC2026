@@ -114,7 +114,6 @@ class RecorderNode(Node):
         if self._dual:
             self.create_subscription(CompressedImage, raw_topic, self.raw_callback, image_qos)
         self.create_subscription(LaneState, state_topic, self.state_callback, 10)
-        from rclpy.qos import QoSProfile, DurabilityPolicy
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.create_subscription(ControlConfig, '/control/config',
                                  self._config_callback, latched)
