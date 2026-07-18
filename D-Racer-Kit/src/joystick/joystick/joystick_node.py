@@ -32,9 +32,8 @@ class JoystickNode(Node):
         self.declare_parameter('throttle_deadzone', 0.05)
         self.declare_parameter('steering_deadzone', 0.05)
         self.declare_parameter('steering_axis', 'auto')
-        # 서보 중립(us). 예전의 steering_trim(-1~1, 명령에 더하던 값)을 대체한다.
-        # 트림은 서보의 중립이지 명령의 일부가 아니다 — 명령에 더하면 u 와 트림이 같은
-        # [-1,1] 예산을 나눠 쓰고 한쪽 조향 권한이 조용히 깎인다.
+        # 서보 중립(us). 트림은 서보의 중립이지 명령의 일부가 아니다 — 명령에 더하면
+        # u 와 트림이 같은 [-1,1] 예산을 나눠 쓰고 한쪽 조향 권한이 조용히 깎인다.
         self.declare_parameter('steer_center_us', 1500.0)
         # 중립 조정 범위 = 서보 하드 clip (1250~2050). 서보는 여기까지 무리 없이 돈다.
         #
@@ -46,7 +45,7 @@ class JoystickNode(Node):
         self.declare_parameter('steer_center_min_us', 1250.0)
         self.declare_parameter('steer_center_max_us', 2050.0)
         self.declare_parameter('calibration_mode', False)
-        self.declare_parameter('calibration_step', 10.0)        # us (예전엔 0.1 = percent)
+        self.declare_parameter('calibration_step', 10.0)        # us
         self.declare_parameter('vehicle_config_file', get_default_vehicle_config_path())
         self.declare_parameter('accel_ratio_step', 0.005)
         self.declare_parameter('accel_ratio_min', 0.12)
@@ -200,9 +199,8 @@ class JoystickNode(Node):
     def update_steering_trim_from_buttons(self, data):
         """Y/B -> 서보 중립을 ±step us 옮긴다. actuator 가 메시지로 받아 즉시 반영한다.
 
-        예전에는 이 버튼이 명령에 더하는 트림(-1~1)을 움직였다. 그것이 u 와 서보 예산을
-        나눠 쓰게 만든 장본인이다. 이제는 서보의 중립 자체를 움직이므로, 맞추고 나면
-        u=0 이 진짜 직진이고 u 는 ±1.0 전체를 대칭으로 쓴다.
+        서보의 중립 자체를 움직이므로, 맞추고 나면 u=0 이 진짜 직진이고 u 는 ±1.0
+        전체를 대칭으로 쓴다.
         """
         if not self.calibration_mode:
             return
@@ -260,7 +258,7 @@ class JoystickNode(Node):
             accel_changed = True
             self.get_logger().info(f'accel_ratio increased to {self.accel_ratio:.3f}')
 
-        if accel_changed:                       # persist like steering_trim
+        if accel_changed:                       # persist to vehicle config
             try:
                 self.save_calibration()
             except Exception as exc:

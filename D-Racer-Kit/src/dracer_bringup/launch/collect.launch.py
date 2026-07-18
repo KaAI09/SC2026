@@ -1,12 +1,6 @@
 """Launch 2/4 — collect: manual drive + perception + RAW recording. DATA COLLECTION.
 
-Replaces the old `record` (manual + raw video) and `perceive` (manual + live 4-panel).
-They were one job split in two, and the split stopped making sense the moment the
-panel moved offline: `record` produced frames nobody had run perception on, and
-`perceive` paid the live-render cost to show a human something a laptop could render
-later, for free, at any resolution.
-
-So `collect` DOES NOT RENDER. Perception runs (that is the point -- the csv carries a
+`collect` DOES NOT RENDER. Perception runs (that is the point -- the csv carries a
 real LaneState per frame), but its debug overlay is off and the monitor shows the RAW
 camera, which is all a human needs while walking the car around a track: where am I.
 The 4-panel view is reconstructed offline from raw/ + csv/ (`offline/panel_replay.py`)

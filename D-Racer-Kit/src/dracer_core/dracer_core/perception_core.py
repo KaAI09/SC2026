@@ -113,7 +113,7 @@ class Cfg:
                                    # Same-colour p90 = 5.7cm, so 8cm admits the lane we are in
                                    # and refuses the fork. <= 0 disables.
     pair_parallel: float = 32.0  # DERIVED from pair_parallel_cm by cfg_to_px. Do not set.
-    # branch policy — PLACEHOLDER for the judgment layer that does not exist yet
+    # branch policy
     branch_policy: str = 'keep'  # what to do when >1 corridor is physically available:
                                  #   keep   - carry on with the corridor the Tracker already
                                  #            has (measured: this is what happens today, 98%
@@ -126,15 +126,10 @@ class Cfg:
                                  #            by proximity, i.e. by accident.
                                  # Whatever picks, it is LATCHED for the length of the branch
                                  # and pushed into the Tracker (adopt). A per-frame choice
-                                 # oscillates by a full lane width -- measured, not feared:
-                                 # that is exactly what a per-frame `coast_side` flip did
-                                 # (§8+), 0 oscillations -> 3.
+                                 # oscillates by a full lane width.
     branch_seed: int = 0         # branch_policy='random' seed. Replays must be reproducible.
     fork_spread_min_cm: float = 15.0  # (L,R) corridor 를 갈림길(섬)로 보는 spread 하한.
-                                      # 25->15: 갈림길 접근부(spread 16~26cm)를 더 잡으려 완화.
-                                      # ⚠ 옛 데이터 일반주행 (L,R) 오검출 spread p50 17.9 — 15 는
-                                      #   그 구간에 걸친다. fresh 4클립은 오검출 0% 였으나 전체
-                                      #   랩으로 재검증 필요. 오검출 뜨면 20~25 로 되올릴 것.
+                                      # 갈림길 접근부(spread 16~26cm)를 잡는 값.
     fork_spread_min: float = 0.0      # DERIVED from fork_spread_min_cm by cfg_to_px. Do not set.
     fork_gap_min_cm: float = 35.0     # 벽 간격(gap)이 이 이상이면 spread 낮아도 갈림길로 본다
                                       # (차선폭 34.8 초과 = 한 차선보다 넓게 벌어짐). (L,R) 과 함께.
@@ -156,27 +151,17 @@ class Cfg:
                                  # and the BEV half-width is 29cm -- i.e. every corridor in the
                                  # frame passes and the gate is decorative. 0.6 x 39 = 23cm, so
                                  # the corridor one lane over (centre ~35cm away) is refused.
-                                 # Measured identical to 0.5/0.75 on the 0711 runs (the nearest-
-                                 # corridor pick and `adopt` already get it right); this is for
-                                 # the 4-lane roundabout, where several corridors are visible and
-                                 # picking the wrong one is a lane change nobody asked for.
+                                 # This is for the 4-lane roundabout, where several corridors are
+                                 # visible and picking the wrong one is a lane change nobody
+                                 # asked for.
     # coast side check (falsify the coast's left/right against the mask; `coast_side`)
     coast_flip_support: float = 0.15   # the MIRROR assumption needs at least this fraction of
                                        # its rows backed by mask pixels before we believe it
                                        # over the tracker. <= 0 disables the check entirely.
                                        #
-                                       # Measured over the 20 coast->pair transitions in the
-                                       # 0711 runs (the pair that ends a coast reveals that
-                                       # coast's true error):
-                                       #   mirror support > 0 in 0 of the 16 coasts that were
-                                       #     RIGHT (< 15cm error)  -> zero false positives
-                                       #   mirror support > 0 in 2 of the 4 coasts that were
-                                       #     WRONG (18cm and 29cm out)
-                                       # 0.15 sits above the noise and below both real hits
-                                       # (0.18, 0.27). This is a LEFT/RIGHT check, not a
-                                       # general coast validator -- one 15cm error had a
-                                       # well-supported phantom and is a width bug, not a
-                                       # side bug.
+                                       # This is a LEFT/RIGHT check, not a general coast
+                                       # validator: a well-supported phantom that is still off
+                                       # is a width bug, not a side bug.
     coast_flip_empty: float = 0.05     # ...AND our own phantom must be this unsupported. The
                                        # flip is only allowed in the unambiguous case: we are
                                        # pointing at bare tarmac and there is tape opposite.
@@ -210,16 +195,7 @@ class Cfg:
                                  # _Stabilizer). It bounds how long the car steers on a stale
                                  # (and, after a corridor flip, WRONG-SIGNED) value -- which
                                  # is a duration, so a duration is what it must be expressed
-                                 # as. Was a 5-FRAME count that meant 0.17s @30Hz and 0.25s
-                                 # @20Hz -- longest exactly when perception was worst.
-                                 #
-                                 # 5 frames @30Hz, measured on the 0711 raw (relatch 6->5->4):
-                                 #   145617  OUTLIER 3.5% -> 2.8%,  max EMA freeze 5 -> 4 fr,
-                                 #           |ema - truth| mean .063 -> .058, p95 .145 -> .137
-                                 #   145515  identical (its bursts top out at 3 fr, below both)
-                                 #   4 crosses the line: it relatches on one of 145515's
-                                 #   3-frame transients -- believing a disagreement that was
-                                 #   about to resolve itself. That is the spike defence going.
+                                 # as.
     use_median: bool = False
     median_window: int = 5       # SAMPLES, not time. A median needs a sample count; leaving
                                  # it in frames is honest (and `use_median` is off).
@@ -278,12 +254,12 @@ def cfg_from_profile(section=None):
 # Cfg fields that `cfg_to_px` COMPUTES from the cm parameters. They are outputs, not
 # inputs: whatever you put in them is overwritten before a single frame is processed.
 #
-# This list exists so `perception_node` can refuse to declare them as ROS parameters. It
-# used to declare every field, so `ros2 param set /perception_node sw_margin 40` would
-# report success, log a live-update, rebuild the pipeline (throwing away the Tracker's
-# state), and change NOTHING -- because cfg_to_px overwrote it on the way in. They look
-# exactly like the knobs you would reach for when detection misbehaves trackside. The real
-# knobs are the `_cm` twins: sw_margin_cm, jump_max_cm, merge_dx_cm, ...
+# This list exists so `perception_node` can refuse to declare them as ROS parameters.
+# Declaring one would be a lie: `ros2 param set /perception_node sw_margin 40` would report
+# success, log a live-update, rebuild the pipeline, and change NOTHING -- because cfg_to_px
+# overwrites it on the way in. They look exactly like the knobs you would reach for when
+# detection misbehaves trackside. The real knobs are the `_cm` twins: sw_margin_cm,
+# jump_max_cm, merge_dx_cm, ...
 DERIVED_PX = frozenset({
     'sw_margin', 'sw_peak_sep', 'merge_dx', 'pair_gap_min', 'jump_max', 'pair_parallel',
     'morph_v', 'sw_minpix', 'sw_peak_min', 'gate_min_px',
@@ -324,8 +300,7 @@ def cfg_to_px(cfg, cam):
         sw_peak_min=max(3, int(round(cfg.sw_peak_min_cm * s))),
         gate_min_px=max(8, int(round(cfg.gate_min_cm2 * s * s))),
         # Tracker reads `lane_width_default * W` as its fallback width, so express the
-        # REAL lane width as that fraction. The old 0.5 was a guess with no physical
-        # meaning — it is what made every coast produce |center_error| ~= 0.5 (§6c).
+        # REAL lane width as that fraction.
         lane_width_default=lane_px / bev_w,
         # In the BEV, heading is a true lateral drift over the lane's span (no perspective
         # convergence to fake it), so express the threshold as a real distance.
@@ -700,10 +675,7 @@ def lane_centers(lanes, w, h, c, lane_w_px=0.0, axis=None):
     white] and adjacent pairing offers (white,yellow)=5cm and (yellow,white)=30cm. The real
     (white,white)=35cm corridor is invisible.
 
-    Measured over the 0711 dashcam clips, on the 323 frames that see 3+ lanes:
-        adjacent pairs -> 2+ corridors in   0 frames
-        all pairs      -> 2+ corridors in 158 frames
-    And 2+ corridors is the whole premise of a branch decision: you cannot choose between
+    2+ corridors is the whole premise of a branch decision: you cannot choose between
     routes you cannot see. `_pair_gate` still has to pass, so this widens the candidate set,
     not the acceptance criteria. With <=6 instances (3 per colour) it is <=15 gate calls.
     """
@@ -767,16 +739,10 @@ def coast_side(near, dx, mask, c, margin, cx):
     AND LOOK. If the far boundary we are synthesising has no mask under it, but the mirror
     assumption DOES, we chose the wrong side.
 
-    Measured over the 20 coast->pair transitions in the 0711 runs (where the pair that ends
-    the coast gives us the coast's true error):
-
-        opposite-side support > 0  in  0 of the 16 coasts that were right (< 15cm error)
-        opposite-side support > 0  in  2 of the 4  coasts that were wrong (18cm, 29cm)
-
-    Zero false positives, and it catches half the real failures. The other half are not
-    side errors at all (one had a well-supported phantom and was still 15cm out -- a width
-    error, a different bug), so this is not a general coast-validator; it is specifically a
-    LEFT/RIGHT check, and that is the failure that inverts the steering command.
+    It catches the real left/right failures with no false positives. The other failures are
+    not side errors at all (a well-supported phantom that is still off is a width error, a
+    different bug), so this is not a general coast-validator; it is specifically a LEFT/RIGHT
+    check, and that is the failure that inverts the steering command.
 
     Returns `dx`, flipped if the evidence says so.
     """
@@ -789,12 +755,10 @@ def coast_side(near, dx, mask, c, margin, cx):
     ys = near['ys']
     s_now = _support(cs, _shift(near['coeffs'], 2.0 * dx), ys, margin)
     s_alt = _support(cs, _shift(near['coeffs'], -2.0 * dx), ys, margin)
-    # The discriminator is `s_alt`. `s_now == 0` is the NORMAL state of a coast -- measured
-    # over the 0711 runs, the chosen phantom has support p50 = 0.000, because the whole reason
-    # we are coasting is that the far boundary is not visible (often it is not even inside the
-    # BEV: 145617's phantom sat at +43cm against a 29cm half-width). So `s_now <= empty` is a
-    # sanity condition, not the signal. The SIGNAL is that the MIRROR has tape under it, and
-    # that is rare: mirror support mean = 0.005 across every coast frame in those runs.
+    # The discriminator is `s_alt`. `s_now == 0` is the NORMAL state of a coast, because the
+    # whole reason we are coasting is that the far boundary is not visible (often it is not
+    # even inside the BEV). So `s_now <= empty` is a sanity condition, not the signal. The
+    # SIGNAL is that the MIRROR has tape under it, and that is rare.
     #
     # Both, though, because `s_alt > s_now` alone would flip on 0.35-vs-0.30 -- a coin toss
     # dressed as evidence -- and a false flip is not a bad frame, it is a bad TRACKER
@@ -821,17 +785,15 @@ def coast_side(near, dx, mask, c, margin, cx):
 
 
 def choose_branch(centers, cx, c, rng):
-    """WHICH ROUTE. This is the judgment layer's seat, and the judgment layer is not here yet.
+    """WHICH ROUTE.
 
     Everything in this file up to now answers "where are the lanes". This answers "which of
     the available routes do we take", and that is a MISSION question -- yellow shortcut or
     main line, roundabout exit 1 or 2 -- which no amount of geometry can settle. So it does
-    not pretend to: it applies a named placeholder and SAYS which one, in `LaneState.ego_rule`.
+    not pretend to: it applies a named policy and SAYS which one, in `LaneState.ego_rule`.
 
-    `keep` (default) reproduces today's behaviour exactly: the Tracker carries the corridor it
-    already had, so the car simply stays in its lane and can NEVER take the shortcut. Measured
-    over the 0711 clips: at the 218 branch frames, `tracked` won 98% of the time. The system
-    does not choose. It continues.
+    `keep` (default): the Tracker carries the corridor it already had, so the car simply stays
+    in its lane and can NEVER take the shortcut. The system does not choose. It continues.
 
     Returns None for `keep` (let the Tracker decide), else the chosen corridor.
     """
@@ -851,8 +813,8 @@ def ego_center(centers, lanes, w, width, mL=None, mR=None, axis=None, c=None,
     identity ACROSS frames (it matches against the lane it tracked last frame), whereas
     deciding the side afresh from `x_bottom < cx` flips as soon as a curving lane crosses the
     image centre — and a flip inverts the shift, so the centreline jumps to the WRONG SIDE of
-    the car. That is what produced the sign reversals: 96 of them, 80% while coasting, and the
-    steering command pointed INTO the lane instead of away from it (§6c/§6e, §7.4 f250).
+    the car. That is what produced the sign reversals: the steering command pointed INTO the
+    lane instead of away from it.
     """
     # 갈림길 회피: use_fork + 섬 감지 + 표지판. coast 메커니즘 재사용하되 dx 부호는 '바깥'.
     if c is not None and getattr(c, 'use_fork', False) and hint in ('L', 'R'):
@@ -877,9 +839,7 @@ def ego_center(centers, lanes, w, width, mL=None, mR=None, axis=None, c=None,
 
     # WHICH CORRIDOR IS OURS. With all-pairs pairing there can now be several -- that is the
     # point (a branch you cannot see is a branch you cannot choose). The rule that picks is
-    # recorded in `rule`, and published, because a placeholder that does not say it is a
-    # placeholder is just a bug waiting to be inherited. There is no route logic here yet:
-    # `nearest` is a STAND-IN for the judgment layer, not a decision.
+    # recorded in `rule`, and published. `nearest` picks by proximity, not by route logic.
     #
     # 1. The corridor bounded by the two lanes the TRACKER is following. Unambiguous, and it
     #    needs no geometry at all: identity across frames beats any single frame's layout.
@@ -953,12 +913,11 @@ class Tracker:
     def _measure_width(self, mL, mR):
         """Corridor width over the COMMON OBSERVED span, as a median. Never extrapolated.
 
-        The old measurement read both parabolas at y = h-1 -- the very bottom BEV row, 26cm.
-        The lanes are almost never detected down there: the near field is outside this lens's
-        lateral FOV, which is the entire reason `coast` exists. So it evaluated two 2nd-order
-        fits well past the data that constrained them, took their difference, and fed that
-        into the width EMA. On a curve the extrapolation error of two fits does not cancel --
-        it compounds.
+        Evaluating both parabolas at y = h-1 (the very bottom BEV row, 26cm) would read two
+        2nd-order fits well past the data that constrained them: the lanes are almost never
+        detected down there, because the near field is outside this lens's lateral FOV -- the
+        entire reason `coast` exists. On a curve that extrapolation error does not cancel, it
+        compounds. So the width is measured only over the common observed span.
         """
         ylo = max(float(mL['ys'].min()), float(mR['ys'].min()))
         yhi = min(float(mL['ys'].max()), float(mR['ys'].max()))
@@ -991,8 +950,8 @@ class Tracker:
 
     def _dist(self, ins, tracked):
         """Median |dx| between a candidate and a tracked fit, over the candidate's OWN
-        observed rows. The old distance read both fits at y = h-1 -- the bottom BEV row,
-        which the near-field FOV means neither of them usually reaches."""
+        observed rows -- not at y = h-1, the bottom BEV row that the near-field FOV means
+        neither fit usually reaches."""
         vs = np.linspace(float(ins['ys'].min()), float(ins['ys'].max()), 7)
         return float(np.median(np.abs(_ebottom(ins['coeffs'], vs) - _ebottom(tracked, vs))))
 
@@ -1000,18 +959,16 @@ class Tracker:
         """Match this frame's candidates to the tracked left/right — over ALL candidates,
         with NO image-half pre-filter. Greedy, nearest pair first; one candidate per role.
 
-        This is the fix. The old code split the candidates on `x_bottom < w/2` and only THEN
-        matched each half against its tracked fit -- so the image centre, a screen-space
-        accident, got to overrule the temporal identity the tracker exists to carry. On a
-        curve, or with the car merely running wide, the left boundary's x_bottom crosses the
-        centre; it vanishes from the left pool, reappears in the right one, and gets matched
-        as the RIGHT boundary. The corridor flips, its centre steps by a full lane width
-        (35cm / 29cm half-width = 1.2 normalised), and the steering command inverts.
+        Splitting the candidates on `x_bottom < w/2` before matching would let the image
+        centre, a screen-space accident, overrule the temporal identity the tracker exists to
+        carry. On a curve, or with the car merely running wide, the left boundary's x_bottom
+        crosses the centre; it vanishes from the left pool, reappears in the right one, and
+        gets matched as the RIGHT boundary. The corridor flips, its centre steps by a full
+        lane width (35cm / 29cm half-width = 1.2 normalised), and the steering command inverts.
 
-        Session 145617 frame 419 did exactly that: left-coast +0.49 -> right-coast -0.38.
-        `outlier_relatch_s` bounds how long the car acts on the inverted value (0.16s); it does
-        not stop the flip. This does. The image centre now decides left from right in exactly
-        one place -- `_seed`, when there is no track to carry.
+        `outlier_relatch_s` bounds how long the car acts on such an inverted value (0.16s); it
+        does not stop the flip. This does. The image centre now decides left from right in
+        exactly one place -- `_seed`, when there is no track to carry.
         """
         scored = []
         for i, ins in enumerate(cands):
@@ -1032,15 +989,12 @@ class Tracker:
         mL, mR = out.get('L'), out.get('R')
 
         # A left boundary is LEFT OF the right one. That is not a heuristic, it is what the
-        # words mean -- and dropping the `x_bottom < w/2` pre-split silently dropped the only
-        # thing that used to enforce it. Proximity matching alone can hand `L` a lane that
-        # sits right of the one it hands `R`, and then `_measure_width` returns a NEGATIVE
+        # words mean, and proximity matching alone does not enforce it: it can hand `L` a lane
+        # that sits right of the one it hands `R`, and then `_measure_width` returns a NEGATIVE
         # width, `Tracker.width` goes negative, and `ego_center` bails out on `width <= 0` --
-        # every frame, forever. Perception reports LOST at 71% while staring at two good lanes.
-        #
-        # (Found with `track_width_tol` turned off: the width gate had been rejecting the
-        # impossible pairs and hiding this. A guard that only holds while another guard holds
-        # is not a guard.)
+        # every frame, forever, while two good lanes sit in view. The `track_width_tol` gate
+        # would mask this by rejecting the impossible pairs; a guard that only holds while
+        # another guard holds is not a guard.
         #
         # An inverted pair means one of the two matches is wrong. Keep the closer one -- it is
         # the better-evidenced -- and let the other side coast.
@@ -1069,34 +1023,30 @@ class Tracker:
         return tuple(a * m + (1 - a) * p for m, p in zip(meas, prev))
 
     def _blend_width(self, wdt, dt_s):
-        """The corridor-width EMA. Was a hard-coded `0.6*old + 0.4*new` -- not even a config
-        field, so it could not be tuned and it silently changed memory with the frame rate."""
+        """The corridor-width EMA. Driven by `ema_tau_s`, so its memory is a physical time
+        constant rather than a per-frame weight that changes meaning with the frame rate."""
         a = _ema_alpha(dt_s, self.c.ema_tau_s)
         self.width = wdt if self.width is None else (1 - a) * self.width + a * wdt
 
     def adopt(self, a, b, dt_s):
         """Re-seed left/right from a corridor that `lane_centers` physically validated.
 
-        THE MISSING FEEDBACK LOOP. `Tracker.update` and `lane_centers` ran as strangers: the
-        tracker matched candidates against its own remembered fits, `lane_centers` paired the
-        boundaries it could actually see, and neither ever told the other it was wrong.
-
-        Which let the tracker be wrong forever. Session 145617, frames 264-280: two lanes on
-        the ground at -25cm and +4cm -- a corridor, centre -10cm. The tracker had latched the
-        RIGHT boundary (+4) as its `L`, synthesised an `R` 39cm further right at +43cm where
-        there was no lane at all, and coasted off that phantom, reporting +0.80. Every few
-        frames `lane_centers` paired the two REAL boundaries and correctly reported -0.24.
-        Neither corrected the other, so center_error oscillated across a full lane width, 8
-        times, and the car steered on it.
+        THE FEEDBACK LOOP between the two lane estimators. Without it `Tracker.update` and
+        `lane_centers` run as strangers: the tracker matches candidates against its own
+        remembered fits, `lane_centers` pairs the boundaries it can actually see, and neither
+        tells the other it is wrong -- which lets the tracker latch a wrong identity forever,
+        synthesise a phantom boundary where there is no lane, and coast off it while
+        `lane_centers` keeps correctly pairing the two real boundaries. center_error then
+        oscillates across a full lane width and the car steers on it.
 
         A pair that passed `_pair_gate` is a real lane width apart with a real overlap. That
         beats anything we are merely remembering -- so take it, and take its identity with it.
 
-        The old code stumbled onto this correction by re-deriving left/right from the image
-        centre every single frame. That self-heals a bad identity, and destroys a good one the
-        instant a lane crosses the centre (which is the flip `_assign` exists to stop). Adopt
-        keeps the healing and drops the flip: geometry corrects identity only when geometry
-        has actually PROVEN something, not merely because a lane wandered across a column.
+        Re-deriving left/right from the image centre every frame would also self-heal a bad
+        identity, but it destroys a good one the instant a lane crosses the centre (the flip
+        `_assign` exists to stop). Adopt keeps the healing and drops the flip: geometry
+        corrects identity only when geometry has actually PROVEN something, not merely because
+        a lane wandered across a column.
         """
         self.L, self.R = a['coeffs'], b['coeffs']
         self.lost_s = 0.0
@@ -1110,9 +1060,8 @@ class Tracker:
 
         A per-frame correction that leaves the tracker wrong is not a correction, it is an
         oscillation: next frame the (still wrong) identity coasts the wrong way again, the
-        mask flips it again, and `center_error` swings a full lane width every frame. That is
-        measured, not hypothetical -- flipping only the output took the 0711 runs from 0
-        oscillations to 3. Same lesson as `adopt`: correct the IDENTITY or do not correct.
+        mask flips it again, and `center_error` swings a full lane width every frame. Same
+        lesson as `adopt`: correct the IDENTITY or do not correct.
         """
         if width <= 0:
             return
@@ -1213,11 +1162,9 @@ class _Stabilizer:
             #
             # It fires on a legitimate event. When the tracker swaps which boundary it
             # can see, the corridor centre steps by a full lane width -- 35cm over a 29cm
-            # half-width = 1.2 normalised, way past the 0.5 gate. Session 145617 did this
-            # at frame 419 (left-coast +0.49 -> right-coast -0.38) and never recovered:
-            # the EMA stayed pinned at +0.428 for the last 44 frames (1.47s) while
-            # perception kept correctly reporting -0.38. control_core reads `ema` and
-            # ignores `state`, so the car steered on the WRONG SIGN for 1.47s.
+            # half-width = 1.2 normalised, way past the 0.5 gate. Left pinned, the EMA holds
+            # a stale value while perception correctly reports the new one; control_core reads
+            # `ema` and ignores `state`, so the car steers on the WRONG SIGN until it recovers.
             #
             # So: reject a spike, but believe a fact. If the new value holds for
             # `outlier_relatch_s` straight it is not noise -- re-seed onto it.
@@ -1280,12 +1227,10 @@ class LanePipeline:
     def reconfigure(self, cfg):
         """Swap the cm config and KEEP the cross-frame state (tracker identity, width, EMAs).
 
-        `ros2 param set` used to rebuild the whole pipeline, which threw away everything the
-        Tracker had learned -- left/right identity, the width EMA, the centre EMA -- so tuning
-        one gain cost a perception discontinuity, and the README told you to stop the car
-        before touching a parameter. That is backwards. The state is a MEASUREMENT (where the
-        lanes are, how wide this corridor is); the config is a JUDGEMENT (what counts as a
-        lane). Changing the judgement does not invalidate the measurement.
+        The state is a MEASUREMENT (where the lanes are, how wide this corridor is); the config
+        is a JUDGEMENT (what counts as a lane). Changing the judgement does not invalidate the
+        measurement, so `ros2 param set` swaps the config and KEEPS the cross-frame state
+        rather than rebuilding the pipeline.
 
         Everything reads `self.c` per frame and so follows automatically -- EXCEPT two values
         frozen at construction, which is exactly why a rebuild looked like the only option:
@@ -1380,15 +1325,14 @@ class LanePipeline:
         # (the cumulative sum) is built inside it, i.e. only on frames that actually coast.
         mask = cv2.bitwise_or(mw, my) if c.coast_flip_support > 0 else None
         centers = lane_centers(lanes, w, h, c, lane_w_px, axis)
-        n_corridors = len(centers)     # >1 = a BRANCH. Recorded, so the judgment layer that
-                                       # does not exist yet can be designed from real data.
+        n_corridors = len(centers)     # >1 = a BRANCH. Recorded and published as branch
+                                       # evidence.
 
         # --- branch: pick a route, ONCE, and stick to it ----------------------
         # LATCHED. Choosing afresh every frame swings center_error by a full lane width every
-        # frame -- that is not a hypothesis, it is what a per-frame `coast_side` flip measured
-        # (0 oscillations -> 3, §8+). So: decide on ENTRY to the branch, push the decision into
-        # the Tracker (`adopt`), and let the Tracker's identity carry it. The latch clears when
-        # the branch does.
+        # frame. So: decide on ENTRY to the branch, push the decision into the Tracker
+        # (`adopt`), and let the Tracker's identity carry it. The latch clears when the branch
+        # does.
         branch_pick = None
         if n_corridors >= 2:
             if not self._in_branch:
@@ -1399,8 +1343,8 @@ class LanePipeline:
         if branch_pick is not None:
             mL, mR = branch_pick['a'], branch_pick['b']     # ego_center picks this up as
             self.trk.adopt(mL, mR, dt_s)                    # 'tracked' -- and STAYS there
-        # `if self.trk.width` was the test, and a NEGATIVE width is truthy -- it sailed straight
-        # through into `ego_center`, which then returned None on `width <= 0`. Belt and braces:
+        # A NEGATIVE width is truthy, so this guards on `> 0`: without it a negative width sails
+        # into `ego_center`, which then returns None on `width <= 0`. Belt and braces --
         # `_measure_width` can no longer produce one, and this can no longer pass one on.
         width = self.trk.width if (self.trk.width and self.trk.width > 0) else c.lane_width_default * w
         ec = ego_center(centers, lanes, w, width, mL, mR, axis, c, mask, c.sw_margin,
@@ -1439,9 +1383,9 @@ class LanePipeline:
             'confidence': confidence, 'left_conf': left_conf,
             'right_conf': right_conf, 'curvature': curvature,
             'state': fstate, 'used_fallback': used_fb,
-            # Branch evidence, for the judgment layer that does not exist yet. `n_corridors`
-            # > 1 means the frame physically supports more than one route and something had
-            # to choose; `ego_rule` says WHICH placeholder chose. Neither is acted on.
+            # Branch evidence. `n_corridors` > 1 means the frame physically supports more than
+            # one route and something had to choose; `ego_rule` says WHICH rule chose. Neither
+            # is acted on.
             'n_corridors': n_corridors,
             'ego_rule': (f'branch_{c.branch_policy}' if (branch_pick is not None and ec is branch_pick)
                          else ((ec.get('rule') or 'none') if ec is not None else 'none')),

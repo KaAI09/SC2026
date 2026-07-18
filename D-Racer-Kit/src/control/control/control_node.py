@@ -17,11 +17,10 @@ SAFETY MODEL
     engage is forced OFF (the `engage` param is untouched). `js_engage` mirrors a message
     field, so without this it stays True forever once the messages stop -- the car drives
     on with nobody holding the pad and no button left to press.
-    CAVEAT, and it is a real one: this fires when joystick_node DIES. It does NOT fire when
+    LIMITATION: this fires when joystick_node DIES. It does NOT fire when
     the PAD is merely unplugged, because joystick_node's read loop swallows the error and
     its timer keeps republishing the last input at 50Hz -- engage flag and all. /joystick
-    stays perfectly fresh. Closing that needs joystick_node to stop asserting a pad it can
-    no longer read; it is not fixed here.
+    stays perfectly fresh, so this watchdog does not observe a merely-unplugged pad.
   * steering is clamped + slew-limited (in the controller); the node always
     publishes at publish_rate so the actuator's control_timeout watchdog stays
     fresh. Kill this node and the car coasts to the watchdog stop.
@@ -97,8 +96,7 @@ class ControlNode(Node):
         p('publish_rate', 30.0)
         p('engage', False)
         # Perception dead-man. 0.25s = ~8 frames at the 30Hz perception runs at; a gap that
-        # long is already an anomaly, not jitter (measured worst gap over the 0711 runs:
-        # 38ms, across 1502 frames, zero drops). Must stay well UNDER the actuator's own
+        # long is already an anomaly, not jitter. Must stay well UNDER the actuator's own
         # control_timeout (0.5s) -- ours is the only watchdog that can see this failure, so
         # it has to fire first. <= 0 disables (do not).
         p('state_timeout', 0.25)
@@ -134,9 +132,8 @@ class ControlNode(Node):
         p('center_target', 0.0)
         p('steer_max', 1.0)   # the trim lives in the servo centre now -> +-1.0 is symmetric
         p('steer_sign', 1.0)
-        p('slew_rate_per_sec', 7.5)   # 0712 ran 187.5 deg/s; at the post-A1 scale (25 deg/u)
-                                      # that is 7.5 u/s. It is a u-rate, not a degree-rate, so
-                                      # the servo rescale moves it exactly like kp.
+        p('slew_rate_per_sec', 7.5)   # a u-rate, not a degree-rate, so the servo rescale
+                                      # moves it exactly like kp.
         p('dt_max', 0.1)
         p('out_ema', 0.0)
         p('throttle_base', 0.13)
@@ -192,7 +189,7 @@ class ControlNode(Node):
         # and create_timer below only register callbacks (state_callback / publish_cmd) that
         # touch self.controller later, during spin() -- nothing above runs it synchronously.
         # Result: a normal run with no `ros2 param set` still publishes /control/config once,
-        # so a late-joining recorder (Task 6) has a value to read.
+        # so a late-joining recorder has a value to read.
         self.controller, self.conf_gate = self._build_controller()
         self.timer = self.create_timer(1.0 / self.publish_rate, self.publish_cmd)
 
@@ -250,7 +247,6 @@ class ControlNode(Node):
         # camera.yaml 의 bev.x_half_cm. control_node 는 calib 을 로드하지 않으므로 상수로 둔다.
         # ⚠ 재캘리브로 camera.yaml 의 x_half_cm 이 바뀌면 이 값도 손으로 맞춰야 한다 — 안 맞추면
         #    /control/config 의 center_error_cm↔center_error 환산 스케일이 어긋난다.
-        #    (deep BEV 로 x_half 를 바꿀 땐 이 상수를 config 단일 출처로 통합하는 걸 검토.)
         return 29.0
 
     def _on_set_params(self, params):
@@ -276,7 +272,7 @@ class ControlNode(Node):
 
     def mission_callback(self, msg: MissionState):
         """cls 는 디바운스된 확정 클래스. 타입은 MissionState(Int32 아님) — 불일치면 콜백이
-        조용히 안 불려 cls 가 -1 로 굳고 GREEN 을 영원히 못 본다(se 가 고친 버그)."""
+        조용히 안 불려 cls 가 -1 로 굳고 GREEN 을 영원히 못 본다."""
         self.mission_cls = int(msg.cls)
 
     def _joystick_is_stale(self):

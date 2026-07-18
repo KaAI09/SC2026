@@ -56,15 +56,13 @@ class MissionCfg:
     # that the detector never reads would be a knob the venue can turn with no effect.
 
     # --- traffic light (cls 0 GREEN, 1 RED), HSV ---
-    # ⚠ RED WAS BROKEN AT THE 0714 VENUE, AND THE FIX IS NOT A THRESHOLD. IT IS A NEW AXIS.
+    # ⚠ RED NEEDS A NEW AXIS, NOT A THRESHOLD. Saturation, area and frame position ALL overlap
+    # between the lamp and the hall behind the track. Measured, 4744 frames: real lamp sat
+    # 245..255 vs background 230..255; area 80..900 vs 64..400; y 0.07..0.18 vs 0.02..0.21.
+    # Every axis.
     #
-    # The old note here said the detector could not be fixed in this file, and on the evidence
-    # it had, it was right. Saturation, area and frame position ALL overlap between the lamp
-    # and the hall behind the track. Measured, 4744 frames: real lamp sat 245..255 vs
-    # background 230..255; area 80..900 vs 64..400; y 0.07..0.18 vs 0.02..0.21. Every axis.
-    #
-    # But it was measuring the wrong thing, and so was the detector. Two labelled clips
-    # settled it (data/mission/real/red, 082431 = lamps LIT, 082620 = same lamps UNLIT):
+    # Two labelled clips settle it (data/mission/real/red: one with the lamps LIT, one with
+    # the same lamps UNLIT):
     #
     #   THE DETECTOR NEVER FOUND THE LAMP AT ALL. Every "RED" it reported was background.
     #   The lit lamp was rejected by `red_min_circ` -- its circularity is 0.27 against a 0.50
@@ -120,9 +118,8 @@ class MissionCfg:
     green_h: tuple = (50, 85)
     green_s_min: int = 190                # LED is monochromatic; background green is 48-63
     green_v_min: int = 30                 # noise floor only. The MEDIAN brightness of the blob
-                                          # really does not separate -- measured at the 0714
-                                          # venue, lamp 62..106 vs a green T-shirt 50..65. The
-                                          # note above is right about that and stays.
+                                          # really does not separate -- measured lamp 62..106
+                                          # vs a green T-shirt 50..65.
     green_min_circ: float = 0.0           # OFF. Same mistake as red, and worse: measured at the
                                           # venue the lamp is circ 0.27..0.33 and the T-SHIRT is
                                           # 0.34..0.36 -- the background is ROUNDER than the
@@ -172,8 +169,8 @@ class MissionCfg:
     red_core_s_max: int = 140             # ...and therefore WHITE, not red
     red_core_min_px: int = 12             # how much of it. 4..12 all measure the same.
     light_min_area: int = 35              # the LED is small on a 320-wide frame
-    red_min_area: int = 100               # 40 -> 100. With circularity gone, area is what keeps
-                                          # the speckle out; the lit lamp runs 100..550.
+    red_min_area: int = 100               # With circularity gone, area is what keeps the
+                                          # speckle out; the lit lamp runs 100..550.
     light_max_area_frac: float = 0.05     # reject blobs > 5% of frame (e.g. a red floor)
     # NOT here, and deliberately: a "reject blobs touching the frame edge" rule. It looks
     # principled (a clipped blob is a fragment, so its area and circularity are measured on
@@ -194,11 +191,11 @@ class MissionCfg:
     blue_s_min: int = 80
     blue_v_min: int = 50
     sign_min_area: int = 250
-    sign_min_circ: float = 0.70            # 0.55 -> 0.70. THE TRACK MAT IS BLUE.
+    sign_min_circ: float = 0.70            # THE TRACK MAT IS BLUE.
                                            #
-                                           # At the 0714 venue the car drives on a blue mat, and
-                                           # a patch of it -- 7935 px, circularity 0.57 -- walked
-                                           # straight through a 0.55 gate. The white lane lines
+                                           # The car drives on a blue mat, and a patch of it --
+                                           # 7935 px, circularity 0.57 -- walked straight through
+                                           # a 0.55 gate. The white lane lines
                                            # crossing it play the part of the arrow's hole, so
                                            # `_arrow_direction` dutifully read a LEFT off the
                                            # floor and published it. Measured on the drive clips:
@@ -310,12 +307,6 @@ def _light_masks(hsv, cfg):
     """Green + red masks, morph-closed to merge fragmented LEDs.
 
     Red needs two hue bands: it straddles the wrap at 0/179.
-
-    (A bright-core "bloom fill" used to widen each mask with very-bright pixels
-    adjacent to its colour ring. Measured on the 8 real-car raw clips it changed
-    nothing at all -- identical detections and identical blob sizes with it on and
-    off -- because the auto-exposed lamp reads DARK on this camera (V~55), so there
-    are no >235 pixels to fill with. Removed.)
     """
     k = np.ones((3, 3), np.uint8)
     red = cv2.bitwise_or(

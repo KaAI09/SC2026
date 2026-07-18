@@ -17,17 +17,14 @@ would publish it, gated by the vehicle-safety layer.
 
 SIGNS. center_error is the corridor centre's offset from the vehicle axis, + = the
 corridor lies to the RIGHT. The law is u = -Kp*e, so a corridor to the LEFT (e < 0)
-gives u > 0: on this vehicle (steer_sign = +1.0, confirmed on the 0711 track runs)
-**u > 0 steers LEFT** -- the car turns toward the corridor, which is the only thing
-that can be true of a controller that laps a track. The old docstring here claimed
-"center_error < 0 -> steer right/+", which is the same command with the opposite
-meaning attached; the code was right and the sentence was wrong. `steer_sign` flips
-the emitted value for a vehicle wired the other way -- and it is applied in exactly
-one place, `_emit()`.
+gives u > 0: on this vehicle (steer_sign = +1.0) **u > 0 steers LEFT** -- the car turns
+toward the corridor, which is the only thing that can be true of a controller that laps
+a track. `steer_sign` flips the emitted value for a vehicle wired the other way -- and
+it is applied in exactly one place, `_emit()`.
 
 Controllers:
-  PD    steering = -(Kp*e + Kd*e_dot)                [default -- the 0711 completion runs]
-  PID   steering = -(Kp*e + Kd*e_dot + Ki*integral)  [no anti-windup yet]
+  PD    steering = -(Kp*e + Kd*e_dot)                [default -- the completion runs]
+  PID   steering = -(Kp*e + Kd*e_dot + Ki*integral)
 
 PURE PURSUIT IS NOT HERE, AND THAT IS DELIBERATE. A pure-pursuit law needs the lateral
 error at a lookahead point as a REAL DISTANCE. Computing it from a normalized image
@@ -35,13 +32,6 @@ coordinate gives you a "lookahead" that is not a distance and a "curvature" that
 a curvature -- a lateral-error regulator wearing a geometry costume, i.e. a PD with
 extra steps. Shipping that as an option only lets someone believe the car is doing pure
 pursuit when it is not.
-
-A real one needs the metric BEV that perception already has: take the centre-line
-polynomial at a lookahead of Ld cm, read the lateral error THERE in cm, and get
-curvature = 2*x_cm/Ld^2 -> steer = atan(wheelbase*curvature). Its parameters are
-MEASUREMENTS (wheelbase, max steering angle), not gains, and it hands you
-curvature-based braking for free. That needs a LaneState field carrying the lookahead
-error, so it is a contract change -- see README.md, remaining work B1.
 """
 from dataclasses import dataclass, replace
 
@@ -69,9 +59,8 @@ class CtrlCfg:
     steer_max: float = 1.0
     steer_sign: float = 1.0        # flip to -1.0 if steering wiring is reversed
     slew_rate_per_sec: float = 0.0    # max |d(steering)|/dt, PER SECOND (0 = off).
-                                      # Was `slew_rate`, a per-STEP limit -- which silently
-                                      # made the car's steering authority a function of the
-                                      # perception frame rate. See `step()`.
+                                      # Per-second so steering authority does not depend on
+                                      # the perception frame rate. See `step()`.
     out_ema: float = 0.0           # smoothing on the output command (0 = off)
     dt_max: float = 0.1            # dt is clamped to this before it scales anything.
                                    # The frame after a perception dropout carries a dt of
@@ -96,17 +85,15 @@ class CtrlCfg:
 PRESETS = {
     'PD':  CtrlCfg(name='PD',  controller='PD'),
     'PID': CtrlCfg(name='PID', controller='PID', ki=0.05),
-    # Pure pursuit: see the module docstring -- it needs the metric lookahead error
-    # that LaneState does not carry yet.
 }
 
 
 def make_ctrl(mode='PD', **overrides):
     """Build a CtrlCfg from a preset name.
 
-    An unknown name RAISES. It used to fall back to P, which meant a typo in the
-    profile (`controller: PD2`) put the car on a different controller than the one
-    written down, silently, at speed.
+    An unknown name RAISES rather than falling back to a default: a typo in the
+    profile (`controller: PD2`) would otherwise put the car on a different controller
+    than the one written down, silently, at speed.
     """
     if mode not in PRESETS:
         raise ValueError(f'unknown controller {mode!r}; expected one of {sorted(PRESETS)}')
@@ -135,13 +122,10 @@ class Controller:
     def _emit(self, u):
         """Internal command -> actuator command. `steer_sign` is applied HERE and ONLY here.
 
-        `prev_u` holds the INTERNAL value. It used to hold the emitted (sign-applied) one,
-        and the low-confidence hold then read it back and multiplied by `steer_sign` a
-        SECOND time -- so on a steer_sign=-1 vehicle "hold the last command" inverted it
-        every frame instead. Latent today (steer_sign=1.0, and conf is only ever 0.9/0.5/0.0
-        against a 0.4 gate, so the hold path never runs), but raising `conf_gate` above 0.5
-        to be careful about coast frames is exactly the next tuning step anyone would take,
-        and it would arm the bug.
+        `prev_u` holds the INTERNAL value, not the emitted (sign-applied) one. If it held the
+        emitted value, the low-confidence hold would read it back and multiply by `steer_sign`
+        a SECOND time -- so on a steer_sign=-1 vehicle "hold the last command" would invert it
+        every frame instead. Keeping `prev_u` internal is what keeps the hold correct.
         """
         return u * self.cfg.steer_sign
 
@@ -183,20 +167,16 @@ class Controller:
         # symmetric and `steer_sign` never enters the state. Emitted once, at the bottom.
         u = clamp(u, -c.steer_max, c.steer_max)
         if c.slew_rate_per_sec > 0 and dt_s > 0:
-            # PER SECOND, not per callback. The old per-step limit meant the car's maximum
-            # turn rate was whatever the perception frame rate happened to be that day:
+            # PER SECOND, not per callback. A per-step limit would make the car's maximum
+            # turn rate depend on the perception frame rate:
             #
             #     0.15/step @ 10.7Hz = 1.6 /s      (full swing 1.0s)
-            #     0.15/step @ 30Hz   = 4.5 /s      (full swing 0.36s)   <- 2.8x, silently
+            #     0.15/step @ 30Hz   = 4.5 /s      (full swing 0.36s)
             #
-            # Raising the camera rate made the steering nearly three times more agile with
-            # no line of code saying so, and the kp 0.35 -> 0.45 retune that followed was
-            # layered on top of that unlogged change. Worse is the other direction: if
-            # perception ever DROPS to 20Hz, a per-step limit quietly cuts the car's turn
-            # rate to 3.0/s -- it physically cannot corner as hard as the run that passed.
-            #
-            # 4.5/s is exactly what the 0711 completion runs realised at 30Hz. Pinning the
-            # PHYSICAL rate reproduces that car at any frame rate.
+            # so a faster camera would silently make the steering more agile, and a drop to
+            # 20Hz would quietly cut the turn rate to 3.0/s -- the car physically could not
+            # corner as hard. Pinning the PHYSICAL rate reproduces the same car at any frame
+            # rate.
             slew = c.slew_rate_per_sec * dt_s
             u = clamp(u, self.prev_u - slew, self.prev_u + slew)
         if c.out_ema > 0:
@@ -213,9 +193,9 @@ class Controller:
             # perception_core._Stabilizer). We are steering on a value that is stale and --
             # after a corridor flip -- WRONG-SIGNED, for up to `outlier_relatch_s`.
             #
-            # That is exactly the 145617 failure: 1.47s of inverted steering while perception
-            # was reporting the truth the whole time. `outlier_relatch_s` shortened the window
-            # to 0.17s; this closes it. Perception knew. Nobody asked.
+            # This guards against inverted steering while perception is reporting the truth
+            # the whole time -- steering on a stale, wrong-signed value. Perception knew;
+            # this makes the control side listen.
             #
             # Steering needs no extra hold: a frozen EMA is a constant `e`, so `de` decays to
             # zero and u is already held. What we buy here is GROUND NOT COVERED.

@@ -74,13 +74,13 @@ class PerceptionNode(Node):
         self.declare_parameter('profile', '')      # [perception] section applied
         self.declare_parameter('camera', '')       # camera.yaml -> metric BEV. REQUIRED.
         self.declare_parameter('jpeg_quality', 80)
-        # 1.0 = render at native panel size. This USED to be 2.0, and 2.0 is a 4x pixel
-        # bill on a link that has to carry it: the BEV view is 552x240, so the car was
-        # JPEG-encoding 1104x480 -- SEVEN times the raw camera frame (320x240) -- thirty
-        # times a second, and pushing it over the venue Wi-Fi. The stream does not drop
-        # frames when the link cannot keep up; they queue in the socket buffer, so the
-        # latency does not plateau, it GROWS. Upscaling is the viewer's job: the browser
-        # already scales the <img> to IMAGE_DISPLAY_*, and it does it for free.
+        # 1.0 = render at native panel size. Going to 2.0 is a 4x pixel bill on a link that
+        # has to carry it: the BEV view is 552x240, so the car would JPEG-encode 1104x480 --
+        # SEVEN times the raw camera frame (320x240) -- thirty times a second, and push it
+        # over the venue Wi-Fi. The stream does not drop frames when the link cannot keep up;
+        # they queue in the socket buffer, so the latency does not plateau, it GROWS.
+        # Upscaling is the viewer's job: the browser already scales the <img> to
+        # IMAGE_DISPLAY_*, and it does it for free.
         self.declare_parameter('debug_scale', 1.0)
         self.declare_parameter('log_hz', 2.0)
         self.declare_parameter('publish_debug', True)
@@ -143,11 +143,9 @@ class PerceptionNode(Node):
         if profile_path:
             self.get_logger().info(f'perception: loaded profile {profile_path}')
 
-        # Mission tuning: every MissionCfg field is a live ROS param too. The mission node
-        # used to keep its OWN copies of these numbers and drifted from the core -- the core
-        # got fixed (housing gate removed, red brightness gate added) while the node kept
-        # passing the old 78 and 0.55, so the offline analysis and the car were not running
-        # the same detector. One source of truth, or none.
+        # Mission tuning: every MissionCfg field is a live ROS param too, so the core is the
+        # single source of truth for these numbers -- the node does not keep its own copies to
+        # drift from it. One source of truth, or none.
         self._mcfg_fields = [f.name for f in dc_fields(MissionCfg)]
         clash = set(self._mcfg_fields) & set(self._cfg_fields)
         if clash:
@@ -212,12 +210,11 @@ class PerceptionNode(Node):
 
         self._last_log = self.get_clock().now()
         self._log_period = 1.0 / self.log_hz if self.log_hz > 0 else 0.0
-        # Achieved rate. Nothing measured this, so a slowdown was invisible. The perception
-        # thresholds no longer stretch with it (they are durations now, fed by `_tick`), but
-        # the rate still matters on its own: it IS latency, control's `dt` comes from these
-        # stamps, and the gains were tuned at 30Hz. The 0711 runs held 30.0Hz with a worst gap
-        # of 38ms over 1502 frames and zero drops; anything materially under that is a
-        # different machine from the one the gains were tuned on, and you should hear about it.
+        # Achieved rate. The perception thresholds are durations (fed by `_tick`), so they do
+        # not stretch with it, but the rate still matters on its own: it IS latency, control's
+        # `dt` comes from these stamps, and the gains were tuned at 30Hz. Anything materially
+        # under rate_floor is a different machine from the one the gains were tuned on, and you
+        # should hear about it.
         self._rate_floor = float(self.declare_parameter('rate_floor_hz', 24.0).value)
         self._t_prev = None
         self._dt_ema = None
@@ -283,10 +280,9 @@ class PerceptionNode(Node):
     def _on_set_params(self, params):
         """Live: swap the config INTO the running pipeline. State survives.
 
-        This used to do `self.pipeline = LanePipeline(...)`, which reset the Tracker's
-        left/right identity, its width EMA and the centre EMA -- so every live tune punched a
-        perception discontinuity into the drive, and the only advice we could give was "stop
-        the car first". `reconfigure` keeps the measurement and swaps only the judgement.
+        `reconfigure` keeps the Tracker's left/right identity, its width EMA and the centre
+        EMA -- it keeps the measurement and swaps only the judgement, so a live tune does not
+        punch a perception discontinuity into the drive.
         """
         names = {p.name for p in params}
         if names & set(self._cfg_fields):

@@ -49,8 +49,7 @@ class MonitorNode(Node):
 
     Deliberately minimal — it subscribes to just the camera image and battery
     topics (plus a storage poll timer) so the web view stays real-time and does
-    not add ROS-graph load. Control/joystick/debug-image/ROS-graph panels were
-    removed to keep latency low during track tests.
+    not add ROS-graph load.
     """
 
     def __init__(self):

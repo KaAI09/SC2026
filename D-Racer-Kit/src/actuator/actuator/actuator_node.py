@@ -164,10 +164,6 @@ class ActuatorNode(Node):
 
         # 0 = straight, full stop. The servo's own centre (ServoCalib.center_us) carries the
         # mechanical trim now, so nothing is added here and the command uses the whole [-1, 1].
-        # This used to be `clamp(u + STEER_TRIM, -1, 1)`: the command and the trim shared ONE
-        # servo budget, which is why steer_max had to be 1 - |trim| = 0.7. And even that was
-        # too much -- the wheels hit their +-25 deg stop at u = +-0.6, so the last 14% of the
-        # command range moved nothing. The controller kept asking; the wheels had stopped.
         self.steering = max(-1.0, min(1.0, float(msg.steering)))
         self.throttle = float(msg.throttle)
         self.last_control_time = self.get_clock().now()
